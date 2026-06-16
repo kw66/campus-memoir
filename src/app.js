@@ -310,6 +310,7 @@ const state = {
   currentNearbyInteractionTargets: [],
   currentNearbyBuildingIds: [],
   selectedNearbyInteractionKey: "",
+  defaultPhotoSpotInteractionKey: "",
   gamePointerDown: null,
   editorEnabled: false,
   editorNotice: "",
@@ -2153,6 +2154,12 @@ function updateNearbyGameContext() {
   state.currentNearbyInteractionTargets = targets;
   state.currentNearbyPhotoSpotId = photoTarget?.id || "";
   state.currentNearbyBuildingIds = structureTargets.map((item) => item.id);
+  if (photoTarget && state.defaultPhotoSpotInteractionKey !== photoTarget.key) {
+    state.selectedNearbyInteractionKey = photoTarget.key;
+    state.defaultPhotoSpotInteractionKey = photoTarget.key;
+  } else if (!photoTarget) {
+    state.defaultPhotoSpotInteractionKey = "";
+  }
   if (!targets.some((item) => item.key === state.selectedNearbyInteractionKey)) {
     state.selectedNearbyInteractionKey = targets[0]?.key || "";
   }
@@ -2988,6 +2995,7 @@ function deleteActiveSpot() {
   state.gameData.selectedSpotPhotoId = "";
   state.currentNearbyPhotoSpotId = "";
   state.selectedNearbyInteractionKey = "";
+  state.defaultPhotoSpotInteractionKey = "";
   updateNearbyGameContext();
   setGameNotice("拍照点已删除");
   markGameDirty();
@@ -4520,6 +4528,7 @@ function handleGameCanvasClick(imagePoint) {
   const clickedSpot = getNearbyPhotoSpotTarget(imagePoint);
   if (clickedSpot) {
     state.selectedNearbyInteractionKey = clickedSpot.key;
+    state.defaultPhotoSpotInteractionKey = clickedSpot.key;
     state.gameData.selectedPhotoSpotId = clickedSpot.id;
     state.gameData.selectedBuildingId = "";
     renderGamePanel({ force: true });
