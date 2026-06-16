@@ -2440,7 +2440,6 @@ function renderGamePanel(options = {}) {
     spotIndex: spot?.activeIndex || 0,
     spotName: spot?.name || "",
     spotDate: spot?.capturedAt || "",
-    spotVisible: spot?.visible !== false,
     spotSelectedPhotoId: state.gameData.selectedSpotPhotoId || "",
     spotEditPhotoId: state.selectedSpotPhotoForEditId || "",
     marker: state.gameData.settings.showPhotoMarkers,
@@ -2525,10 +2524,6 @@ function renderPhotoPanelHtml(spot) {
         <input class="game-input" data-game-field="photoSpotName" type="text" value="${escapeAttr(spot.name || "")}" placeholder="${escapeAttr(spotTitle)}">
         <input class="game-input" data-game-field="photoSpotDate" type="date" value="${escapeAttr(getPhotoSpotDateValue(spot))}">
       </div>
-      <label class="switch-row spot-visible-row">
-        <input type="checkbox" data-game-action="toggleSpotVisible" ${spot.visible !== false ? "checked" : ""}>
-        <span>远处显示点位</span>
-      </label>
       <div class="photo-list" data-photo-list="spot">
         ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
       </div>
@@ -2729,10 +2724,7 @@ function onGamePanelInput(event) {
   }
 }
 
-function onGamePanelChange(event) {
-  const control = event.target.closest('[data-game-action="toggleSpotVisible"]');
-  if (control) setActivePhotoSpotVisible(control.checked);
-}
+function onGamePanelChange() {}
 
 function handleGameAction(action, button) {
   switch (action) {
@@ -2741,9 +2733,6 @@ function handleGameAction(action, button) {
       return;
     case "savePhotoSpot":
       saveActivePhotoSpotMeta();
-      return;
-    case "toggleSpotVisible":
-      setActivePhotoSpotVisible(button.checked);
       return;
     case "selectSpotPhoto":
       selectSpotPhoto(button.dataset.photoId || "");
@@ -3051,16 +3040,6 @@ function saveActivePhotoSpotMeta(options = {}) {
   markGameDirty(options.defer ? { defer: true } : {});
   if (!options.silent) setGameNotice("拍照点已保存");
   if (!options.silent) renderGamePanel({ force: true });
-  queueDraw();
-}
-
-function setActivePhotoSpotVisible(visible) {
-  const spot = getActivePhotoSpot();
-  if (!spot) return;
-  spot.visible = Boolean(visible);
-  spot.updatedAt = new Date().toISOString();
-  markGameDirty({ defer: true });
-  renderGamePanel({ force: true });
   queueDraw();
 }
 
@@ -6019,7 +5998,7 @@ function drawGamePhotoMarkers(ctx) {
     const radius = Math.max(7, (spot.radius || playerRadius) * state.view.scale * 0.36);
     if (screen.x < -radius || screen.y < -radius || screen.x > state.canvasSize.width + radius || screen.y > state.canvasSize.height + radius) continue;
     const active = spot.id === state.gameData.selectedPhotoSpotId || spot.id === state.currentNearbyPhotoSpotId;
-    if (!active && (!showFarMarkers || spot.visible === false)) continue;
+    if (!active && !showFarMarkers) continue;
     ctx.save();
     ctx.fillStyle = active ? "rgba(226, 118, 77, 0.95)" : "rgba(255, 250, 240, 0.88)";
     ctx.strokeStyle = active ? "#8f3f2d" : "rgba(31, 85, 78, 0.88)";
