@@ -2509,7 +2509,6 @@ function renderPhotoPanelHtml(spot) {
       <div class="game-actions dense">
         <button class="secondary-button" type="button" data-game-action="${prevAction}" ${prevDisabled ? "disabled" : ""}>${prevLabel}</button>
         <button class="secondary-button" type="button" data-game-action="${nextAction}" ${nextDisabled ? "disabled" : ""}>${nextLabel}</button>
-        <button class="secondary-button" type="button" data-game-action="savePhotoSpot">保存</button>
         <button class="secondary-button" type="button" data-game-action="uploadSpotPhoto">拍照</button>
         <button class="secondary-button danger" type="button" data-game-action="deletePhotoSpotSelected" ${canDeleteSpot || editSelectedId ? "" : "disabled"}>删除</button>
       </div>
@@ -2553,8 +2552,7 @@ function renderCampusInteractionHtml(region, building) {
           ${buildingPhotoUrl ? `<img src="${buildingPhotoUrl}" alt="">` : `<span>建筑照片</span>`}
         </div>
         <div class="game-actions dense">
-          <button class="secondary-button" type="button" data-game-action="saveBuildingName">命名</button>
-          <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto">建筑图</button>
+          <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto">拍照</button>
           <button class="secondary-button" type="button" data-game-action="prevBuildingPhoto" ${!building || building.photos.length < 2 ? "disabled" : ""}>上一张</button>
           <button class="secondary-button" type="button" data-game-action="nextBuildingPhoto" ${!building || building.photos.length < 2 ? "disabled" : ""}>下一张</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteBuildingPhoto" ${!building || !building.photos.length ? "disabled" : ""}>删图</button>
@@ -2692,12 +2690,8 @@ function onGamePanelInput(event) {
   const field = event.target.closest("[data-game-field]");
   if (!field) return;
   const name = field.dataset.gameField;
-  if (name === "buildingCategory") {
-    const building = getSelectedBuildingMemory();
-    if (!building) return;
-    building.category = BUILDING_CATEGORY_RULES[field.value] ? field.value : "other";
-    building.updatedAt = new Date().toISOString();
-    markGameDirty({ defer: true });
+  if (name === "buildingName" || name === "buildingCategory") {
+    saveSelectedBuildingMeta({ defer: true, silent: true });
   } else if (name === "photoSpotName" || name === "photoSpotDate") {
     saveActivePhotoSpotMeta({ defer: true, silent: true });
   }
@@ -2709,9 +2703,6 @@ function handleGameAction(action, button) {
   switch (action) {
     case "uploadSpotPhoto":
       els.spotPhotoInput.click();
-      return;
-    case "savePhotoSpot":
-      saveActivePhotoSpotMeta();
       return;
     case "selectSpotPhoto":
       selectSpotPhoto(button.dataset.photoId || "");
@@ -2736,9 +2727,6 @@ function handleGameAction(action, button) {
       return;
     case "selectInteraction":
       selectNearbyInteraction(button.dataset.interactionKey || "");
-      return;
-    case "saveBuildingName":
-      saveSelectedBuildingMeta();
       return;
     case "uploadBuildingPhoto":
       els.buildingPhotoInput.click();
@@ -3064,7 +3052,7 @@ function selectNearbyInteraction(key) {
   queueDraw();
 }
 
-function saveSelectedBuildingMeta() {
+function saveSelectedBuildingMeta(options = {}) {
   const building = getSelectedBuildingMemory();
   const region = getStructureRegionById(state.gameData.selectedBuildingId);
   if (!building || !region) return;
@@ -3076,9 +3064,9 @@ function saveSelectedBuildingMeta() {
   region.name = name || region.name || "";
   building.updatedAt = new Date().toISOString();
   commitStructureDataChange();
-  markGameDirty();
-  setGameNotice("建筑已保存");
-  renderGamePanel({ force: true });
+  markGameDirty(options.defer ? { defer: true } : {});
+  if (!options.silent) setGameNotice("建筑已保存");
+  if (!options.silent) renderGamePanel({ force: true });
   queueDraw();
 }
 
