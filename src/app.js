@@ -13,6 +13,8 @@ const LINEAR_STRUCTURE_WIDTH = 12;
 const DEFAULT_PLAYER_RADIUS = 26;
 const DEFAULT_WALK_SPEED = 320;
 const WALK_SPEED_FACTOR = 0.75;
+const MOVE_SLIDE_SAMPLE_RADIUS = 8;
+const MOVE_SLIDE_MIN_DISTANCE = 0.5;
 const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
 const PHOTO_SPOT_NAME_PREFIX = "拍照点";
@@ -1951,11 +1953,8 @@ function updateGameMovement(dt) {
   if (!vector.x && !vector.y) return false;
   const player = state.gameData.player;
   const speed = (Number(player.walkSpeed) || DEFAULT_WALK_SPEED) * WALK_SPEED_FACTOR;
-  const next = {
-    x: clamp(player.x + vector.x * speed * dt, 0, state.mapNaturalSize.width),
-    y: clamp(player.y + vector.y * speed * dt, 0, state.mapNaturalSize.height)
-  };
-  if (!canPlayerMoveTo(next)) return false;
+  const next = resolvePlayerMove(player, vector, speed * dt);
+  if (!next) return false;
   player.x = next.x;
   player.y = next.y;
   updateNearbyGameContext();
@@ -1964,6 +1963,128 @@ function updateGameMovement(dt) {
   renderGamePanel();
   queueDraw();
   return true;
+}
+
+function resolvePlayerMove(origin, direction, distanceValue) {
+  if (!distanceValue || (!direction.x && !direction.y)) return null;
+  const fullDelta = {
+    x: direction.x * distanceValue,
+    y: direction.y * distanceValue
+  };
+  const direct = clampMoveTarget(origin, fullDelta);
+  if (canPlayerMoveTo(direct)) return direct;
+  const projected = getProjectedSlideMove(origin, direction, distanceValue, direct);
+  if (projected) return projected;
+  return getFallbackSlideMove(origin, fullDelta);
+}
+
+function clampMoveTarget(origin, delta) {
+  return {
+    x: clamp(origin.x + delta.x, 0, state.mapNaturalSize.width),
+    y: clamp(origin.y + delta.y, 0, state.mapNaturalSize.height)
+  };
+}
+
+function getProjectedSlideMove(origin, direction, distanceValue, blockedPoint) {
+  const normal = estimateBlockedBoundaryNormal(blockedPoint);
+  if (!normal) return null;
+  const dot = direction.x * normal.x + direction.y * normal.y;
+  const projected = {
+    x: direction.x - normal.x * dot,
+    y: direction.y - normal.y * dot
+  };
+  const projectedLength = Math.hypot(projected.x, projected.y);
+  const tangent = normalizeVector(projected);
+  if (!tangent) return null;
+  const projectedDistance = distanceValue * projectedLength;
+  return findFarthestWalkableMove(origin, {
+    x: tangent.x * projectedDistance,
+    y: tangent.y * projectedDistance
+  });
+}
+
+function estimateBlockedBoundaryNormal(point) {
+  const radius = MOVE_SLIDE_SAMPLE_RADIUS;
+  const offsets = [
+    { x: radius, y: 0 },
+    { x: -radius, y: 0 },
+    { x: 0, y: radius },
+    { x: 0, y: -radius },
+    { x: radius, y: radius },
+    { x: -radius, y: radius },
+    { x: radius, y: -radius },
+    { x: -radius, y: -radius }
+  ];
+  let x = 0;
+  let y = 0;
+  for (const offset of offsets) {
+    const sample = {
+      x: point.x + offset.x,
+      y: point.y + offset.y
+    };
+    if (canPlayerMoveTo(sample)) {
+      x += offset.x;
+      y += offset.y;
+    } else {
+      x -= offset.x;
+      y -= offset.y;
+    }
+  }
+  return normalizeVector({ x: -x, y: -y });
+}
+
+function getFallbackSlideMove(origin, fullDelta) {
+  const candidates = [];
+  if (Math.abs(fullDelta.x) >= MOVE_SLIDE_MIN_DISTANCE) candidates.push({ x: fullDelta.x, y: 0 });
+  if (Math.abs(fullDelta.y) >= MOVE_SLIDE_MIN_DISTANCE) candidates.push({ x: 0, y: fullDelta.y });
+  candidates.push(
+    { x: fullDelta.x * 0.75, y: fullDelta.y * 0.25 },
+    { x: fullDelta.x * 0.25, y: fullDelta.y * 0.75 },
+    { x: fullDelta.x * 0.5, y: 0 },
+    { x: 0, y: fullDelta.y * 0.5 }
+  );
+  let best = null;
+  let bestDistance = 0;
+  for (const candidate of candidates) {
+    const move = findFarthestWalkableMove(origin, candidate);
+    if (!move) continue;
+    const moved = distance(origin, move);
+    if (moved > bestDistance) {
+      best = move;
+      bestDistance = moved;
+    }
+  }
+  return bestDistance >= MOVE_SLIDE_MIN_DISTANCE ? best : null;
+}
+
+function findFarthestWalkableMove(origin, delta) {
+  if (Math.hypot(delta.x, delta.y) < MOVE_SLIDE_MIN_DISTANCE) return null;
+  let low = 0;
+  let high = 1;
+  let best = null;
+  for (let index = 0; index < 8; index++) {
+    const t = (low + high) / 2;
+    const point = clampMoveTarget(origin, {
+      x: delta.x * t,
+      y: delta.y * t
+    });
+    if (canPlayerMoveTo(point)) {
+      best = point;
+      low = t;
+    } else {
+      high = t;
+    }
+  }
+  return best && distance(origin, best) >= MOVE_SLIDE_MIN_DISTANCE ? best : null;
+}
+
+function normalizeVector(vector) {
+  const length = Math.hypot(vector.x, vector.y);
+  if (!Number.isFinite(length) || length < 0.0001) return null;
+  return {
+    x: vector.x / length,
+    y: vector.y / length
+  };
 }
 
 function getMovementVector() {
