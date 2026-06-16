@@ -2403,6 +2403,7 @@ function getPhotoSpotDateValue(spot) {
 function getNearbyStructureTargets(point) {
   const editData = getSelectedEditData();
   return (editData.structureRegions || [])
+    .filter((region) => region.visible !== false)
     .filter((region) => isInteractiveStructureType(region?.type || "custom"))
     .map((region) => {
       const areas = getRegionAreas(region);
@@ -5614,6 +5615,7 @@ function sampleStructureAt(point, options = {}) {
     });
   }
   for (const stroke of editData.judgementStrokes) {
+    if (!includeHidden && !stroke.objectId) continue;
     if (!includeHidden && stroke.objectId && !visibleObjects.has(stroke.objectId)) continue;
     if (!isPointInStroke(point, stroke)) continue;
     hits.push({
@@ -6317,6 +6319,7 @@ function drawNearbyBuildingHints(ctx, editData) {
   const showNames = state.gameData.settings.showInteractionMarkers !== false;
   if (!nearby.size && !showNames) return;
   for (const region of editData.structureRegions || []) {
+    if (region.visible === false || !isInteractiveStructureType(region.type || "custom")) continue;
     const isNearby = nearby.has(region.id);
     if (!isNearby && !showNames) continue;
     const selected = region.id === state.gameData.selectedBuildingId;
