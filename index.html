@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>校园回忆录</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./src/styles.css?v=20260616c" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="school-button" id="schoolButton" type="button">选择学校</button>
+          <div class="current-school" id="currentSchool">未选择学校</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="primary-button compact" id="editorToggleButton" type="button">进入地图编辑</button>
+        </div>
+      </header>
+
+      <main class="game-layout" aria-label="校园回忆录主界面">
+        <section class="map-panel" aria-label="地图区域">
+          <div class="map-frame" id="mapFrame">
+            <canvas class="map-canvas" id="mapCanvas"></canvas>
+            <output class="map-zoom-readout" id="zoomReadout">100%</output>
+            <div class="map-actions" id="mapActions" hidden>
+              <button class="map-action-button" id="mapPhotoButton" type="button">拍照</button>
+              <label class="map-action-toggle"><input id="mapPhotoMarkersToggle" type="checkbox" checked />点位</label>
+              <label class="map-action-toggle"><input id="mapInteractionMarkersToggle" type="checkbox" checked />标注</label>
+            </div>
+            <div class="map-empty" id="mapEmpty">
+              <div>请选择或新建学校</div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="info-panel" aria-label="信息区域">
+          <div class="panel-header" id="panelHeader">
+            <div>
+              <div class="info-heading" id="panelKicker">信息</div>
+              <h1 id="infoTitle">等待选择学校</h1>
+            </div>
+          </div>
+
+          <div class="info-body" id="infoBody">左上角选择学校，或新建一个学校并导入大地图图片。</div>
+          <div class="game-panel" id="gamePanel" hidden></div>
+
+          <input id="spotPhotoInput" type="file" accept="image/*" multiple hidden />
+          <input id="buildingPhotoInput" type="file" accept="image/*" multiple hidden />
+          <input id="entrancePhotoInput" type="file" accept="image/*" multiple hidden />
+          <input id="roomPhotoInput" type="file" accept="image/*" multiple hidden />
+          <input id="itemPhotoInput" type="file" accept="image/*" multiple hidden />
+          <input id="playerPortraitInput" type="file" accept="image/*" hidden />
+          <input id="personPhotoInput" type="file" accept="image/*" hidden />
+
+          <div class="missing-map-actions" id="missingMapActions" hidden>
+            <button class="primary-button" id="reimportMapButton" type="button">重新导入地图图片</button>
+            <input id="reimportMapInput" type="file" accept="image/*" hidden />
+          </div>
+
+          <div class="editor-panel" id="editorPanel" hidden>
+            <section class="editor-section editor-layer-bar" aria-label="编辑对象">
+              <button class="layer-toggle active" id="showBaseLayer" type="button" aria-pressed="true">底图</button>
+              <button class="layer-toggle" id="showStructureLayer" type="button" aria-pressed="false">结构图</button>
+            </section>
+
+            <div class="editor-mode-tabs" role="radiogroup" aria-label="地图编辑模式">
+              <button class="mode-tab active" data-editor-layer="base" data-editor-mode="crop" type="button">裁剪</button>
+              <button class="mode-tab" data-editor-layer="base" data-editor-mode="rotate" type="button">旋转</button>
+              <button class="mode-tab" data-editor-layer="base" data-editor-mode="base" type="button">绘制</button>
+              <button class="mode-tab" data-editor-layer="base" data-editor-mode="color" type="button">替换</button>
+              <button class="mode-tab" data-editor-layer="structure" data-editor-mode="structure" type="button" hidden>绘制</button>
+              <button class="mode-tab" data-editor-layer="structure" data-editor-mode="structureDisplay" type="button" hidden>显示</button>
+            </div>
+
+            <section class="editor-section editor-workspace" data-editor-panel="crop">
+              <div class="tool-grid single-row" role="radiogroup" aria-label="底图裁剪工具">
+                <button class="tool-button" data-tool="pan" type="button">拖动</button>
+                <button class="tool-button" data-tool="crop" type="button">选区</button>
+              </div>
+              <div class="tool-grid single-row">
+                <button class="secondary-button" id="commitCropButton" type="button">裁剪</button>
+                <button class="secondary-button" id="undoCropButton" type="button">撤销</button>
+                <button class="primary-button" id="saveCropButton" type="button">保存</button>
+              </div>
+            </section>
+
+            <section class="editor-section editor-workspace" data-editor-panel="rotate" hidden>
+              <div class="field-row rotate-angle-row">
+                <label for="rotateAngleInput">角度</label>
+                <input id="rotateAngleInput" type="range" min="-180" max="180" step="1" value="0" />
+                <input id="rotateAngleNumber" class="compact-number" type="number" min="-180" max="180" step="1" value="0" aria-label="旋转角度" />
+              </div>
+              <div class="tool-grid single-row">
+                <button class="secondary-button" id="rotateLeftButton" type="button">左转90</button>
+                <button class="secondary-button" id="rotateRightButton" type="button">右转90</button>
+                <button class="secondary-button" id="undoRotateButton" type="button">撤销</button>
+                <button class="primary-button" id="saveRotateButton" type="button">保存</button>
+              </div>
+            </section>
+
+            <section class="editor-section editor-workspace" data-editor-panel="base" hidden>
+              <div class="tool-grid" role="radiogroup" aria-label="底图画笔工具">
+                <button class="tool-button" data-tool="pan" type="button">拖动</button>
+                <button class="tool-button" data-tool="eyedropper" type="button" title="长按可跨页面取色">取色器</button>
+                <button class="tool-button" data-tool="paint" type="button">画笔</button>
+                <button class="tool-button" data-tool="erase" type="button">橡皮擦</button>
+              </div>
+              <div class="field-row">
+                <label for="brushSize">粗细</label>
+                <input id="brushSize" type="range" min="2" max="120" value="24" />
+                <output id="brushSizeReadout">24</output>
+              </div>
+              <div class="color-panel">
+                <div class="color-slot-row">
+                  <button class="color-slot active" data-color-slot="target" type="button">
+                    <span>颜色</span>
+                    <i data-color-preview="target"></i>
+                  </button>
+                </div>
+                <div class="palette-block">
+                  <div class="palette-label">图中颜色</div>
+                  <div class="swatches" data-palette="image" aria-label="图中颜色"></div>
+                </div>
+              </div>
+              <div class="tool-grid single-row">
+                <button class="secondary-button" id="undoBaseButton" type="button">撤销</button>
+                <button class="primary-button" id="saveBaseButton" type="button">保存</button>
+              </div>
+            </section>
+
+            <section class="editor-section editor-workspace" data-editor-panel="color" hidden>
+              <div class="tool-grid" role="radiogroup" aria-label="颜色区域工具">
+                <button class="tool-button" data-tool="pan" type="button">拖动</button>
+                <button class="tool-button" data-tool="eyedropper" type="button" title="长按可跨页面取色">取色器</button>
+                <button class="tool-button" data-tool="fillArea" type="button">区域涂色</button>
+                <button class="tool-button" data-tool="colorConnected" type="button">联通同色</button>
+                <button class="tool-button" data-tool="colorAll" type="button">全部同色</button>
+              </div>
+              <div class="segmented-row" aria-label="区域形状">
+                <button class="shape-toggle active" data-area-shape="polygon" type="button">多边形</button>
+                <button class="shape-toggle" data-area-shape="rect" type="button">矩形</button>
+                <button class="shape-toggle" data-area-shape="ellipse" type="button">椭圆</button>
+              </div>
+              <div class="color-panel">
+                <div class="color-slot-row">
+                  <button class="color-slot active" data-color-slot="target" type="button">
+                    <span>颜色</span>
+                    <i data-color-preview="target"></i>
+                  </button>
+                </div>
+                <div class="palette-block">
+                  <div class="palette-label">图中颜色</div>
+                  <div class="swatches" data-palette="image" aria-label="图中颜色"></div>
+                </div>
+              </div>
+              <div class="tool-grid single-row">
+                <button class="secondary-button" id="commitBaseRegionButton" type="button">确定区域</button>
+                <button class="secondary-button" id="undoColorButton" type="button">撤销</button>
+                <button class="primary-button" id="saveColorButton" type="button">保存</button>
+              </div>
+            </section>
+
+            <section class="editor-section editor-workspace" data-editor-panel="structure" hidden>
+              <div class="structure-object-form">
+                <input id="structureObjectNameInput" type="text" autocomplete="off" placeholder="对象名称" />
+                <select id="structureObjectTypeInput">
+                  <option value="building">建筑</option>
+                  <option value="road">道路</option>
+                  <option value="bridge">桥</option>
+                  <option value="water">水体</option>
+                  <option value="field">操场/场地</option>
+                  <option value="green">草地</option>
+                  <option value="wall">围墙</option>
+                  <option value="gate">门</option>
+                  <option value="custom">自定义</option>
+                </select>
+                <input id="structureObjectColorInput" type="color" value="#b75243" aria-label="对象颜色" />
+              </div>
+              <div class="structure-object-actions">
+                <button class="secondary-button" id="addStructureObjectButton" type="button">新增</button>
+                <button class="secondary-button" id="saveStructureObjectButton" type="button">保存</button>
+                <button class="secondary-button danger" id="deleteStructureObjectButton" type="button">删除</button>
+              </div>
+              <div class="tool-grid" role="radiogroup" aria-label="结构图工具">
+                <button class="tool-button" data-tool="pan" type="button">拖动</button>
+                <button class="tool-button" data-tool="structurePolygon" type="button">多边形</button>
+                <button class="tool-button" data-tool="structureLine" type="button">线段</button>
+                <button class="tool-button" data-tool="structureParallelogram" type="button">平行四边形</button>
+                <button class="tool-button" data-tool="structureBrush" type="button">画笔</button>
+                <button class="tool-button" data-tool="structureErase" type="button">橡皮擦</button>
+                <button class="tool-button" data-tool="sameColorConnected" type="button">联通同色</button>
+                <button class="tool-button" data-tool="sameColorAll" type="button">全部同色</button>
+              </div>
+              <div class="field-row structure-brush-size-row">
+                <label for="structureBrushSize">粗细</label>
+                <input id="structureBrushSize" type="range" min="2" max="120" value="24" />
+                <output id="structureBrushSizeReadout">24</output>
+              </div>
+              <label class="check-row compact-check">
+                <input id="structureObjectWalkableInput" type="checkbox" checked />
+                <span>当前对象可通行</span>
+              </label>
+              <div class="field-row" hidden>
+                <label for="colorTolerance">容差</label>
+                <input id="colorTolerance" type="range" min="0" max="32" value="8" />
+                <output id="colorToleranceReadout">8</output>
+              </div>
+              <div class="button-row">
+                <button class="secondary-button" id="commitStructureRegionButton" type="button">添加区域</button>
+                <button class="secondary-button" id="undoEditButton" type="button">撤销</button>
+                <button class="secondary-button danger" id="clearDraftButton" type="button">清除草稿</button>
+              </div>
+              <div class="button-row structure-visibility-actions">
+                <button class="secondary-button" id="showAllStructureButton" type="button">一键启用</button>
+                <button class="secondary-button" id="hideAllStructureButton" type="button">一键隐藏</button>
+              </div>
+              <div class="structure-object-list" id="structureObjectList"></div>
+              <div class="structure-list-pager" id="structureListPager">
+                <button class="secondary-button" id="structureListPrevButton" type="button">上一页</button>
+                <output id="structureListPageReadout">1 / 1</output>
+                <button class="secondary-button" id="structureListNextButton" type="button">下一页</button>
+              </div>
+              <div class="editor-status" id="editorStatus" hidden></div>
+            </section>
+
+            <section class="editor-section editor-workspace" data-editor-panel="structureDisplay" hidden>
+              <div class="field-row opacity-row">
+                <label for="baseOpacityInput">底图</label>
+                <input id="baseOpacityInput" type="range" min="0" max="100" value="45" />
+                <output id="baseOpacityReadout">45%</output>
+              </div>
+            </section>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <dialog class="school-dialog" id="schoolDialog" aria-label="选择或构建你的校园">
+      <form method="dialog" class="dialog-shell" id="schoolForm">
+        <div class="dialog-header">
+          <strong>选择/构建你的校园</strong>
+          <button class="icon-button" id="closeDialogButton" type="button" aria-label="关闭">×</button>
+        </div>
+
+        <div class="dialog-grid">
+          <section class="dialog-section school-picker">
+            <div class="school-list" id="schoolList"></div>
+            <div class="school-picker-actions">
+              <button class="school-card create-card active" id="newSchoolChoiceButton" type="button">+ 新建</button>
+              <button class="school-card download-card" id="downloadCatalogButton" type="button">下载</button>
+            </div>
+          </section>
+
+          <section class="dialog-section campus-form-panel" id="campusFormPanel">
+            <input id="resourceImportInput" type="file" accept="image/*,application/json,.json,.zip" multiple hidden />
+
+            <div class="bulk-actions">
+              <button class="secondary-button" id="bulkImportButton" type="button">导入</button>
+              <button class="secondary-button" id="bulkExportButton" type="button">导出</button>
+              <button class="secondary-button danger" id="bulkDeleteButton" type="button">删除</button>
+            </div>
+            <div class="resource-hint">勾选已有资源后可导出或删除。</div>
+
+            <div class="resource-row name-row">
+              <div class="resource-label">学校名称</div>
+              <div class="resource-info">
+                <input id="schoolNameInput" name="schoolName" type="text" autocomplete="off" placeholder="例如：中国科学技术大学高新校区" />
+              </div>
+              <label class="resource-check">
+                <input class="resource-select" type="checkbox" data-resource="school" />
+                <span class="sr-only">选择学校名称</span>
+              </label>
+            </div>
+
+            <div class="resource-row">
+              <div class="resource-label">大地图图片</div>
+              <div class="resource-info">
+                <span id="mapResourceInfo">未导入</span>
+              </div>
+              <label class="resource-check">
+                <input class="resource-select" type="checkbox" data-resource="map" />
+                <span class="sr-only">选择大地图图片</span>
+              </label>
+            </div>
+
+            <div class="resource-row">
+              <div class="resource-label">地图结构</div>
+              <div class="resource-info">
+                <span id="structureResourceInfo">未导入</span>
+              </div>
+              <label class="resource-check">
+                <input class="resource-select" type="checkbox" data-resource="structure" />
+                <span class="sr-only">选择地图结构</span>
+              </label>
+            </div>
+
+            <div class="resource-row dependent-row">
+              <div class="resource-label">其他图片</div>
+              <div class="resource-info">
+                <span id="extraImagesResourceInfo">未导入</span>
+              </div>
+              <label class="resource-check">
+                <input class="resource-select" type="checkbox" data-resource="extraImages" />
+                <span class="sr-only">选择其他图片</span>
+              </label>
+            </div>
+
+            <div class="resource-row dependent-row">
+              <div class="resource-label">人物关系</div>
+              <div class="resource-info">
+                <span id="peopleResourceInfo">未导入</span>
+              </div>
+              <label class="resource-check">
+                <input class="resource-select" type="checkbox" data-resource="people" />
+                <span class="sr-only">选择人物关系</span>
+              </label>
+            </div>
+
+            <div class="form-note" id="formNote">必填：名称、大图。</div>
+            <div class="form-footer">
+              <button class="primary-button" id="createSchoolButton" type="submit">创建并进入</button>
+              <button class="secondary-button" id="saveSchoolButton" type="button">保存</button>
+            </div>
+          </section>
+
+          <section class="dialog-section download-panel" id="downloadPanel" hidden>
+            <div class="download-list" id="downloadList"></div>
+          </section>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="color-popover" id="colorPickerPopover" hidden>
+      <div class="popover-color-row">
+        <input id="popoverColorInput" type="color" value="#f5e9bd" aria-label="选择颜色" />
+        <input id="popoverHexInput" type="text" value="#f5e9bd" maxlength="7" spellcheck="false" aria-label="颜色值" />
+      </div>
+      <div class="popover-swatches" id="popoverSwatches" aria-label="图中颜色"></div>
+    </div>
+
+    <script src="./src/app.js?v=20260616c"></script>
+  </body>
+</html>
