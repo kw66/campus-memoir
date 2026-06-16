@@ -539,6 +539,17 @@ button:disabled {
   cursor: default;
 }
 
+.entrance-target {
+  min-height: 28px;
+  padding: 5px 8px;
+  border: 1px solid #d7c7a8;
+  border-radius: 6px;
+  background: #fff8e8;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .mini-danger {
   min-height: 22px;
   padding: 0 6px;
@@ -571,7 +582,7 @@ button:disabled {
 
 .building-editor {
   min-height: 0;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 

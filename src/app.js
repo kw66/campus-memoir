@@ -433,7 +433,6 @@ const els = {
   gamePanel: document.querySelector("#gamePanel"),
   spotPhotoInput: document.querySelector("#spotPhotoInput"),
   buildingPhotoInput: document.querySelector("#buildingPhotoInput"),
-  entrancePhotoInput: document.querySelector("#entrancePhotoInput"),
   roomPhotoInput: document.querySelector("#roomPhotoInput"),
   itemPhotoInput: document.querySelector("#itemPhotoInput"),
   playerPortraitInput: document.querySelector("#playerPortraitInput"),
@@ -944,11 +943,6 @@ function bindEvents() {
     const files = [...(els.buildingPhotoInput.files || [])];
     els.buildingPhotoInput.value = "";
     if (files.length) void addPhotosToSelectedBuilding(files);
-  });
-  els.entrancePhotoInput.addEventListener("change", () => {
-    const files = [...(els.entrancePhotoInput.files || [])];
-    els.entrancePhotoInput.value = "";
-    if (files.length) void addEntranceAtPlayer(files[0]);
   });
   els.roomPhotoInput.addEventListener("change", () => {
     const files = [...(els.roomPhotoInput.files || [])];
@@ -2197,10 +2191,13 @@ function getSelectedNearbyInteractionTarget() {
 
 function getNearbyPhotoSpotTarget(point) {
   const playerRadius = Number(state.gameData.player.radius) || DEFAULT_PLAYER_RADIUS;
-  const maxDistance = Math.max(1, playerRadius * PHOTO_SPOT_INTERACT_RADIUS_FACTOR);
   let best = null;
   for (const spot of state.gameData.photoSpots) {
     const d = distance(point, spot);
+    const spotRadius = Number(spot.radius) || playerRadius;
+    const maxDistance = getPhotoSpotEntrance(spot)
+      ? playerRadius + spotRadius
+      : Math.max(1, playerRadius * PHOTO_SPOT_INTERACT_RADIUS_FACTOR);
     if (d > maxDistance) continue;
     if (!best || d < best.distance) {
       best = {
@@ -2218,9 +2215,48 @@ function getNearbyPhotoSpotTarget(point) {
 
 function getPhotoSpotDisplayName(spot) {
   if (!spot) return `${PHOTO_SPOT_NAME_PREFIX}00`;
+  const entrance = getPhotoSpotEntrance(spot);
+  if (entrance && (entrance.autoName !== false || !spot.name?.trim())) return getEntranceSpotAutoName(spot);
   if (spot.name?.trim()) return spot.name.trim();
   const index = state.gameData.photoSpots.findIndex((item) => item.id === spot.id);
   return `${PHOTO_SPOT_NAME_PREFIX}${String(index >= 0 ? index + 1 : 1).padStart(2, "0")}`;
+}
+
+function getPhotoSpotEntrance(spot) {
+  const entrance = spot?.entranceFor;
+  if (!entrance || typeof entrance !== "object") return null;
+  return typeof entrance.buildingId === "string" && entrance.buildingId ? entrance : null;
+}
+
+function getEntranceBuildingForSpot(spot) {
+  const entrance = getPhotoSpotEntrance(spot);
+  if (!entrance) return null;
+  const region = getStructureRegionById(entrance.buildingId);
+  const building = region ? getOrCreateBuildingMemory(region.id) : null;
+  return region && building ? { region, building, entrance } : null;
+}
+
+function getBuildingEntranceSpots(regionId) {
+  if (!regionId) return [];
+  const order = new Map((state.gameData.buildings[regionId]?.entrances || []).map((entry, index) => [entry.photoSpotId, index]));
+  const spots = state.gameData.photoSpots
+    .filter((spot) => getPhotoSpotEntrance(spot)?.buildingId === regionId)
+    .sort((a, b) => {
+      const ai = order.has(a.id) ? order.get(a.id) : Number.MAX_SAFE_INTEGER;
+      const bi = order.has(b.id) ? order.get(b.id) : Number.MAX_SAFE_INTEGER;
+      if (ai !== bi) return ai - bi;
+      return state.gameData.photoSpots.indexOf(a) - state.gameData.photoSpots.indexOf(b);
+    });
+  return spots.map((spot, index) => ({ spot, index }));
+}
+
+function getEntranceSpotAutoName(spot) {
+  const entrance = getPhotoSpotEntrance(spot);
+  if (!entrance) return "";
+  const region = getStructureRegionById(entrance.buildingId);
+  const building = region ? getOrCreateBuildingMemory(region.id) : null;
+  const index = getBuildingEntranceSpots(entrance.buildingId).findIndex((item) => item.spot.id === spot.id);
+  return `${getBuildingDisplayName(region, building)}入口${Math.max(1, index + 1)}`;
 }
 
 function getPhotoSpotDateValue(spot) {
@@ -2436,6 +2472,7 @@ function renderGamePanel(options = {}) {
     spotDate: spot?.capturedAt || "",
     spotSelectedPhotoId: state.gameData.selectedSpotPhotoId || "",
     spotEditPhotoId: state.selectedSpotPhotoForEditId || "",
+    spotEntrance: spot ? getPhotoSpotEntrance(spot)?.buildingId || "" : "",
     marker: state.gameData.settings.showPhotoMarkers,
     structureMarker: state.gameData.settings.showInteractionMarkers,
     selectedTargetKey: selectedTarget?.key || "",
@@ -2496,6 +2533,7 @@ function renderPhotoPanelHtml(spot) {
   const selectedId = getSelectedSpotPhotoId(spot);
   const photoList = renderSpotPhotoListHtml(spot, selectedId);
   const spotTitle = getPhotoSpotDisplayName(spot);
+  const entranceTarget = getEntranceBuildingForSpot(spot);
   const canDeleteSpot = !spot.photos.length;
   const editSelectedId = getSelectedSpotPhotoForEditId(spot);
   const editIndex = getSpotPhotoIndexById(spot, editSelectedId);
@@ -2510,10 +2548,12 @@ function renderPhotoPanelHtml(spot) {
         </div>
       </div>
       <div class="spot-fields">
-        <input class="game-input" data-game-field="photoSpotName" type="text" value="${escapeAttr(spot.name || "")}" placeholder="${escapeAttr(spotTitle)}">
+        <input class="game-input" data-game-field="photoSpotName" type="text" value="${escapeAttr(spot.name || (entranceTarget ? spotTitle : ""))}" placeholder="${escapeAttr(spotTitle)}">
         <input class="game-input" data-game-field="photoSpotDate" type="date" value="${escapeAttr(getPhotoSpotDateValue(spot))}">
       </div>
+      ${entranceTarget ? `<div class="entrance-target">入口：${escapeHtml(getBuildingDisplayName(entranceTarget.region, entranceTarget.building))}</div>` : ""}
       <div class="game-actions dense">
+        ${entranceTarget ? `<button class="primary-button" type="button" data-game-action="enterFromPhotoSpot">进入</button>` : ""}
         <button class="secondary-button" type="button" data-game-action="moveSpotPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
         <button class="secondary-button" type="button" data-game-action="moveSpotPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
         <button class="secondary-button" type="button" data-game-action="uploadSpotPhoto">拍照</button>
@@ -2566,9 +2606,8 @@ function renderCampusInteractionHtml(region, building) {
   }
   if (!region || !building) return "";
   const hasBuilding = Boolean(region && building);
-  const category = building?.category || "other";
-  const categories = Object.entries(BUILDING_CATEGORY_RULES).map(([key, rule]) => `<option value="${key}" ${key === category ? "selected" : ""}>${rule.label}</option>`).join("");
   const photoList = renderBuildingPhotoListHtml(building);
+  const entranceCandidate = getEntranceLinkCandidate(region);
   const editSelectedId = getSelectedBuildingPhotoForEditId(building);
   const editIndex = getBuildingPhotoIndexById(building, editSelectedId);
   const moveBackDisabled = editIndex <= 0;
@@ -2578,16 +2617,14 @@ function renderCampusInteractionHtml(region, building) {
       <div class="game-card-head"><strong>${escapeHtml(getStructureInteractionLabel(region))}</strong><span>${escapeHtml(TYPE_STYLES[region?.type || "custom"]?.label || "对象")}</span></div>
       <div class="building-editor" ${hasBuilding ? "" : "hidden"}>
         <input class="game-input" data-game-field="buildingName" type="text" value="${escapeAttr(building?.customName || region?.name || "")}" placeholder="建筑名称">
-        <select class="game-input" data-game-field="buildingCategory">${categories}</select>
         <div class="game-actions dense">
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
           <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto">拍照</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteBuildingPhoto" ${!editSelectedId ? "disabled" : ""}>删图</button>
-          <button class="secondary-button" type="button" data-game-action="uploadEntrancePhoto">设入口</button>
-          <button class="primary-button" type="button" data-game-action="enterBuilding" ${!building?.entrances?.some((entry) => entry.photo) ? "disabled" : ""}>进入</button>
+          <button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>
         </div>
-        <div class="entrance-list">${renderEntranceListHtml(building)}</div>
+        <div class="entrance-list">${renderEntranceListHtml(region, building)}</div>
         <div class="photo-list building-photo-list" data-photo-list="building">
           ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
         </div>
@@ -2596,12 +2633,13 @@ function renderCampusInteractionHtml(region, building) {
   `;
 }
 
-function renderEntranceListHtml(building) {
-  if (!building?.entrances?.length) return `<span class="muted-inline">还没有入口</span>`;
-  return building.entrances.map((entry, index) => `
+function renderEntranceListHtml(region, building) {
+  const entries = getBuildingEntranceSpots(region?.id);
+  if (!entries.length) return `<span class="muted-inline">还没有入口</span>`;
+  return entries.map(({ spot }, index) => `
     <span class="entrance-row">
-      入口${index + 1}${entry.photo ? " 有图" : ""}
-      <button class="mini-danger" type="button" data-game-action="deleteEntrance" data-entrance-id="${escapeAttr(entry.id)}">删</button>
+      ${escapeHtml(getPhotoSpotDisplayName(spot) || `入口${index + 1}`)}${spot.photos.length ? " 有图" : ""}
+      <button class="mini-danger" type="button" data-game-action="unlinkEntrance" data-spot-id="${escapeAttr(spot.id)}">删</button>
     </span>
   `).join("");
 }
@@ -2721,7 +2759,7 @@ function onGamePanelInput(event) {
   const field = event.target.closest("[data-game-field]");
   if (!field) return;
   const name = field.dataset.gameField;
-  if (name === "buildingName" || name === "buildingCategory") {
+  if (name === "buildingName") {
     saveSelectedBuildingMeta({ defer: true, silent: true });
   } else if (name === "photoSpotName" || name === "photoSpotDate") {
     saveActivePhotoSpotMeta({ defer: true, silent: true });
@@ -2768,14 +2806,14 @@ function handleGameAction(action, button) {
     case "deleteBuildingPhoto":
       deleteSelectedBuildingPhoto();
       return;
-    case "uploadEntrancePhoto":
-      els.entrancePhotoInput.click();
+    case "linkPhotoSpotEntrance":
+      linkNearbyPhotoSpotAsEntrance();
       return;
-    case "deleteEntrance":
-      deleteEntrance(button.dataset.entranceId || "");
+    case "unlinkEntrance":
+      unlinkPhotoSpotEntrance(button.dataset.spotId || "");
       return;
-    case "enterBuilding":
-      enterSelectedBuilding();
+    case "enterFromPhotoSpot":
+      enterFromActivePhotoSpot();
       return;
     case "exitBuilding":
       exitBuilding();
@@ -3013,6 +3051,12 @@ function deleteSelectedPhotoOrSpot() {
 function deleteActiveSpot() {
   const spot = getActivePhotoSpot();
   if (!spot || spot.photos.length) return;
+  const entrance = getPhotoSpotEntrance(spot);
+  if (entrance?.buildingId && state.gameData.buildings[entrance.buildingId]) {
+    const building = state.gameData.buildings[entrance.buildingId];
+    building.entrances = normalizeBuildingEntranceRefs(building.entrances).filter((entry) => entry.photoSpotId !== spot.id);
+    building.updatedAt = new Date().toISOString();
+  }
   state.gameData.photoSpots = state.gameData.photoSpots.filter((item) => item.id !== spot.id);
   state.gameData.selectedPhotoSpotId = "";
   state.gameData.selectedSpotPhotoId = "";
@@ -3032,7 +3076,15 @@ function saveActivePhotoSpotMeta(options = {}) {
   if (!spot) return;
   const nameInput = els.gamePanel.querySelector('[data-game-field="photoSpotName"]');
   const dateInput = els.gamePanel.querySelector('[data-game-field="photoSpotDate"]');
-  spot.name = nameInput?.value?.trim() || "";
+  const name = nameInput?.value?.trim() || "";
+  const entrance = getPhotoSpotEntrance(spot);
+  if (entrance) {
+    const autoName = getEntranceSpotAutoName(spot);
+    entrance.autoName = !name || name === autoName;
+    spot.name = entrance.autoName ? "" : name;
+  } else {
+    spot.name = name;
+  }
   const dateValue = dateInput?.value || "";
   spot.capturedAt = dateValue ? new Date(`${dateValue}T00:00:00`).toISOString() : (spot.capturedAt || new Date().toISOString());
   spot.updatedAt = new Date().toISOString();
@@ -3098,10 +3150,8 @@ function saveSelectedBuildingMeta(options = {}) {
   const region = getStructureRegionById(state.gameData.selectedBuildingId);
   if (!building || !region) return;
   const nameInput = els.gamePanel.querySelector('[data-game-field="buildingName"]');
-  const categoryInput = els.gamePanel.querySelector('[data-game-field="buildingCategory"]');
   const name = nameInput?.value?.trim() || "";
   building.customName = name;
-  building.category = BUILDING_CATEGORY_RULES[categoryInput?.value] ? categoryInput.value : building.category;
   region.name = name || region.name || "";
   building.updatedAt = new Date().toISOString();
   commitStructureDataChange();
@@ -3169,47 +3219,106 @@ function deleteSelectedBuildingPhoto() {
   renderGamePanel({ force: true });
 }
 
-async function addEntranceAtPlayer(file) {
-  const building = getSelectedBuildingMemory();
-  const region = getStructureRegionById(state.gameData.selectedBuildingId);
-  if (!building || !region) return;
+function getEntranceLinkCandidate(region) {
+  const spot = getNearestPhotoSpotTouchingPlayer();
+  if (!region) return { canLink: false, spot: null, reason: "没有可关联对象" };
+  if (!spot) return { canLink: false, spot: null, reason: "需要站在拍照点附近" };
+  const existing = getPhotoSpotEntrance(spot);
+  if (existing?.buildingId === region.id) return { canLink: false, spot, reason: "这个拍照点已经是入口" };
+  if (existing?.buildingId) return { canLink: false, spot, reason: "这个拍照点已关联其他入口" };
+  if (!isPlayerCircleTouchingPhotoSpot(spot)) return { canLink: false, spot, reason: "需要更靠近拍照点" };
+  if (!isPlayerCircleTouchingRegion(region)) return { canLink: false, spot, reason: "需要同时靠近建筑或场景" };
+  return { canLink: true, spot, reason: "关联当前拍照点为入口" };
+}
+
+function getNearestPhotoSpotTouchingPlayer() {
+  let best = null;
+  let bestDistance = Infinity;
+  for (const spot of state.gameData.photoSpots) {
+    const d = distance(state.gameData.player, spot);
+    if (!isPlayerCircleTouchingPhotoSpot(spot) || d >= bestDistance) continue;
+    best = spot;
+    bestDistance = d;
+  }
+  return best;
+}
+
+function isPlayerCircleTouchingPhotoSpot(spot) {
   const player = state.gameData.player;
-  const nearby = getNearbyStructureTargets(player).some((item) => item.id === region.id);
-  if (!nearby) {
-    setGameNotice("需要靠近建筑才能设置入口");
+  const playerRadius = Number(player.radius) || DEFAULT_PLAYER_RADIUS;
+  const spotRadius = Number(spot?.radius) || playerRadius;
+  return distance(player, spot) <= playerRadius + spotRadius;
+}
+
+function isPlayerCircleTouchingRegion(region) {
+  const player = state.gameData.player;
+  const radius = Number(player.radius) || DEFAULT_PLAYER_RADIUS;
+  const areas = getRegionAreas(region);
+  if (!areas.length) return false;
+  return distanceToRegion(player, areas, region) <= radius;
+}
+
+function linkNearbyPhotoSpotAsEntrance() {
+  const region = getStructureRegionById(state.gameData.selectedBuildingId);
+  const building = getSelectedBuildingMemory();
+  const candidate = getEntranceLinkCandidate(region);
+  if (!building || !region || !candidate.canLink || !candidate.spot) {
+    setGameNotice(candidate.reason || "需要同时靠近拍照点和建筑");
     renderGamePanel({ force: true });
     return;
   }
-  const record = await blobToResourceRecord(file, file.name || "entrance");
-  building.entrances.push({
-    id: createId("entrance"),
-    x: player.x,
-    y: player.y,
-    photo: createPhotoFromResource(record),
-    createdAt: new Date().toISOString()
-  });
-  building.updatedAt = new Date().toISOString();
+  const spot = candidate.spot;
+  const now = new Date().toISOString();
+  spot.entranceFor = {
+    buildingId: region.id,
+    autoName: true,
+    createdAt: now
+  };
+  spot.name = "";
+  spot.updatedAt = now;
+  building.entrances = normalizeBuildingEntranceRefs(building.entrances);
+  if (!building.entrances.some((entry) => entry.photoSpotId === spot.id)) {
+    building.entrances.push({ id: createId("entrance"), photoSpotId: spot.id, createdAt: now });
+  }
+  building.updatedAt = now;
+  state.selectedNearbyInteractionKey = `photoSpot:${spot.id}`;
+  state.gameData.selectedPhotoSpotId = spot.id;
+  state.gameData.selectedBuildingId = "";
+  updateNearbyGameContext();
   markGameDirty();
-  setGameNotice("入口已添加");
+  setGameNotice(`${getPhotoSpotDisplayName(spot)} 已设为入口`);
   renderGamePanel({ force: true });
   queueDraw();
 }
 
-function deleteEntrance(entranceId) {
-  const building = getSelectedBuildingMemory();
-  if (!building || !entranceId) return;
-  building.entrances = building.entrances.filter((entry) => entry.id !== entranceId);
+function unlinkPhotoSpotEntrance(spotId) {
+  const spot = state.gameData.photoSpots.find((item) => item.id === spotId);
+  const entrance = getPhotoSpotEntrance(spot);
+  const building = entrance ? state.gameData.buildings[entrance.buildingId] : getSelectedBuildingMemory();
+  if (!spot || !building) return;
+  building.entrances = normalizeBuildingEntranceRefs(building.entrances).filter((entry) => entry.photoSpotId !== spot.id);
   building.updatedAt = new Date().toISOString();
+  delete spot.entranceFor;
+  spot.updatedAt = new Date().toISOString();
   markGameDirty();
+  setGameNotice("入口已取消");
   renderGamePanel({ force: true });
   queueDraw();
 }
 
-function enterSelectedBuilding() {
-  const building = getSelectedBuildingMemory();
-  const regionId = state.gameData.selectedBuildingId;
-  if (!building || !regionId || !building.entrances.some((entry) => entry.photo)) return;
+function enterFromActivePhotoSpot() {
+  const spot = getActivePhotoSpot();
+  const entranceTarget = getEntranceBuildingForSpot(spot);
+  if (!spot || !entranceTarget || !isPlayerCircleTouchingPhotoSpot(spot)) {
+    setGameNotice("需要站在入口附近");
+    renderGamePanel({ force: true });
+    return;
+  }
+  const building = entranceTarget.building;
+  const regionId = entranceTarget.region.id;
   state.gameData.location = { kind: "building", buildingId: regionId, roomId: "" };
+  state.gameData.selectedBuildingId = regionId;
+  state.gameData.selectedPhotoSpotId = "";
   state.gameData.selectedRoomId = building.rooms[0]?.id || "";
   state.gameData.selectedItemId = "";
   state.gameData.selectedPersonId = "";
@@ -5987,6 +6096,7 @@ function drawGameScene(ctx, editData) {
 
 function drawGamePhotoMarkers(ctx) {
   const showFarMarkers = state.gameData.settings.showPhotoMarkers !== false;
+  const showPhotoLabels = showFarMarkers && state.gameData.settings.showInteractionMarkers !== false;
   const playerRadius = state.gameData.player.radius || DEFAULT_PLAYER_RADIUS;
   for (const spot of state.gameData.photoSpots) {
     const screen = imageToScreen(spot);
@@ -6014,7 +6124,7 @@ function drawGamePhotoMarkers(ctx) {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(String(spot.photos.length || 0), screen.x, screen.y + 0.5);
-    if (active && (spot.name || getPhotoSpotDisplayName(spot))) {
+    if (showPhotoLabels && (spot.name || getPhotoSpotDisplayName(spot))) {
       const label = getPhotoSpotDisplayName(spot);
       const metrics = ctx.measureText(label);
       const labelWidth = Math.min(metrics.width + 16, 180);
@@ -6929,6 +7039,7 @@ function normalizeGameData(source) {
     const normalized = normalizeGameBuilding(building, id);
     if (normalized) base.buildings[id] = normalized;
   }
+  migrateLegacyEntrancesToPhotoSpots(base);
   return base;
 }
 
@@ -6942,6 +7053,7 @@ function normalizePhotoSpot(source) {
     x,
     y,
     name: typeof source.name === "string" ? source.name : "",
+    entranceFor: normalizePhotoSpotEntrance(source.entranceFor),
     capturedAt: typeof source.capturedAt === "string" ? source.capturedAt : (typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString()),
     radius: Number.isFinite(Number(source.radius)) ? clamp(Number(source.radius), 8, 100) : DEFAULT_PLAYER_RADIUS,
     visible: source.visible !== false,
@@ -6997,16 +7109,62 @@ function normalizeGameBuilding(source, fallbackId) {
 
 function normalizeEntrance(source) {
   if (!source || typeof source !== "object") return null;
-  const x = Number(source.x);
-  const y = Number(source.y);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
   return {
     id: typeof source.id === "string" ? source.id : createId("entrance"),
-    x,
-    y,
+    photoSpotId: typeof source.photoSpotId === "string" ? source.photoSpotId : "",
+    x: Number.isFinite(Number(source.x)) ? Number(source.x) : null,
+    y: Number.isFinite(Number(source.y)) ? Number(source.y) : null,
     photo: normalizePhotoRecord(source.photo) || null,
     createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString()
   };
+}
+
+function normalizePhotoSpotEntrance(source) {
+  if (!source || typeof source !== "object" || typeof source.buildingId !== "string" || !source.buildingId) return null;
+  return {
+    buildingId: source.buildingId,
+    autoName: source.autoName !== false,
+    createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString()
+  };
+}
+
+function normalizeBuildingEntranceRefs(entrances) {
+  return (Array.isArray(entrances) ? entrances : [])
+    .map((entry) => ({
+      id: typeof entry?.id === "string" ? entry.id : createId("entrance"),
+      photoSpotId: typeof entry?.photoSpotId === "string" ? entry.photoSpotId : "",
+      createdAt: typeof entry?.createdAt === "string" ? entry.createdAt : new Date().toISOString()
+    }))
+    .filter((entry) => entry.photoSpotId);
+}
+
+function migrateLegacyEntrancesToPhotoSpots(gameData) {
+  const now = new Date().toISOString();
+  for (const [buildingId, building] of Object.entries(gameData.buildings || {})) {
+    const refs = [];
+    for (const entry of building.entrances || []) {
+      let spot = entry.photoSpotId ? gameData.photoSpots.find((item) => item.id === entry.photoSpotId) : null;
+      if (!spot && Number.isFinite(Number(entry.x)) && Number.isFinite(Number(entry.y))) {
+        spot = normalizePhotoSpot({
+          id: createId("spot"),
+          x: Number(entry.x),
+          y: Number(entry.y),
+          name: "",
+          capturedAt: entry.createdAt || now,
+          radius: DEFAULT_PLAYER_RADIUS,
+          photos: entry.photo ? [entry.photo] : [],
+          entranceFor: { buildingId, autoName: true, createdAt: entry.createdAt || now },
+          createdAt: entry.createdAt || now,
+          updatedAt: now
+        });
+        if (spot) gameData.photoSpots.push(spot);
+      }
+      if (!spot) continue;
+      spot.entranceFor = normalizePhotoSpotEntrance(spot.entranceFor) || { buildingId, autoName: true, createdAt: entry.createdAt || now };
+      refs.push({ id: entry.id || createId("entrance"), photoSpotId: spot.id, createdAt: entry.createdAt || now });
+    }
+    building.entrances = refs.filter((entry, index, array) => array.findIndex((item) => item.photoSpotId === entry.photoSpotId) === index);
+  }
 }
 
 function normalizeRoom(source) {
