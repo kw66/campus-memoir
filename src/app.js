@@ -57,6 +57,10 @@ function isLinearStructureType(type) {
   return type === "wall";
 }
 
+function isInteractiveStructureType(type) {
+  return !["road", "water", "wall"].includes(type);
+}
+
 const DEFAULT_EDIT_DATA = {
   version: 1,
   cropPolygon: [],
@@ -2399,6 +2403,7 @@ function getPhotoSpotDateValue(spot) {
 function getNearbyStructureTargets(point) {
   const editData = getSelectedEditData();
   return (editData.structureRegions || [])
+    .filter((region) => isInteractiveStructureType(region?.type || "custom"))
     .map((region) => {
       const areas = getRegionAreas(region);
       const bounds = getRegionLabelBounds(areas);
