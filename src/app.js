@@ -54,7 +54,7 @@ const TYPE_STYLES = {
 };
 
 function isLinearStructureType(type) {
-  return type === "wall" || type === "gate";
+  return type === "wall";
 }
 
 const DEFAULT_EDIT_DATA = {
@@ -506,6 +506,7 @@ async function init() {
     state.db = await openDatabase();
     state.schools = normalizeSchools(loadSchools());
     saveSchools();
+    await migrateStoredEditData();
   } catch (error) {
     state.schools = normalizeSchools(loadSchools());
     setFormError("本地图片存储初始化失败，暂时无法新建学校。");
@@ -1846,6 +1847,10 @@ async function renderGameView(options = {}) {
   els.mapEmpty.textContent = "正在载入地图图片";
   const mapImageUrl = await getMapImageUrl(school);
   const editData = await getEditData(school.id);
+  if (editData.__migrated) {
+    delete editData.__migrated;
+    await putEditData(school.id, editData);
+  }
   const gameData = await getGameData(school.id);
   state.editCache.set(school.id, editData);
   state.gameData = gameData;
@@ -4160,7 +4165,8 @@ function renderStructureObjectList() {
       type: region.type || "",
       color: region.color || "",
       walkable: Boolean(region.walkable),
-      visible: region.visible !== false
+      visible: region.visible !== false,
+      eraseAreas: getRegionEraseAreas(region).length
     }))
   });
   if (key === state.structureObjectListKey) return;
@@ -4250,6 +4256,10 @@ function getRegionAreas(region) {
   }
   if (Array.isArray(region.polygon) && region.polygon.length >= 3) return [{ kind: "polygon", points: region.polygon }];
   return [];
+}
+
+function getRegionEraseAreas(region) {
+  return Array.isArray(region?.eraseAreas) ? region.eraseAreas : [];
 }
 
 function getRegionAreaCount(region) {
@@ -4494,7 +4504,7 @@ function onPointerDown(event) {
   } else if (state.pointer.mode === "structureBrush") {
     state.activeStroke = createJudgementStroke(imagePoint);
   } else if (state.pointer.mode === "structureErase") {
-    state.activeStroke = createStructureEraseStroke(imagePoint);
+    if (getSelectedStructureObject()) state.activeStroke = createStructureEraseStroke(imagePoint);
   } else if (isRectLikeDraftTool(state.pointer.mode)) {
     state.draftShape = createDraftShape(state.pointer.mode, imagePoint, imagePoint);
   } else if (state.pointer.mode === "colorConnected" || state.pointer.mode === "colorAll") {
@@ -4853,6 +4863,7 @@ function createJudgementStroke(point) {
 function createStructureEraseStroke(point) {
   return {
     id: createId("serase"),
+    objectId: getSelectedStructureObject()?.id || "",
     mode: "erase",
     size: state.structureBrushSize,
     shape: "circle",
@@ -4990,11 +5001,26 @@ async function finishActiveStroke() {
     state.structureDraftActions.push({ id: createId("sact"), kind: "stroke", objectId: stroke.objectId || "", strokeId: stroke.id, stroke });
     persistEditData();
   } else if (stroke.id.startsWith("serase")) {
-    state.structureDraftActions.push({ id: createId("sact"), kind: "eraseStroke", stroke });
+    applyStructureEraseStroke(stroke);
   }
   state.structureObjectListKey = "";
   renderEditorState();
   queueDraw();
+}
+
+function applyStructureEraseStroke(stroke) {
+  const selected = stroke.objectId ? getSelectedEditData().structureRegions.find((region) => region.id === stroke.objectId) : getSelectedStructureObject();
+  if (!selected || !stroke.points.length) return;
+  const eraseArea = {
+    kind: "line",
+    points: stroke.points.map((point) => ({ ...point })),
+    width: Math.max(1, Number(stroke.size) || state.structureBrushSize)
+  };
+  selected.eraseAreas = [...getRegionEraseAreas(selected), eraseArea];
+  selected.updatedAt = new Date().toISOString();
+  state.structureDraftActions.push({ id: createId("sact"), kind: "eraseArea", objectId: selected.id, area: eraseArea });
+  markStructureLayerDirty();
+  persistEditData();
 }
 
 function commitCropDraft() {
@@ -5145,20 +5171,23 @@ function undoBaseStep() {
 function addStructureObject() {
   const editData = getSelectedEditData();
   const type = els.structureObjectTypeInput.value || "custom";
+  const normalizedType = TYPE_STYLES[type] ? type : "custom";
+  const defaultColor = TYPE_STYLES[normalizedType]?.line || TYPE_STYLES.custom.line;
   const region = {
     id: createId("region"),
     name: els.structureObjectNameInput.value.trim() || getStructureObjectFallbackName(null),
-    type,
-    walkable: type === "custom" ? els.structureObjectWalkableInput.checked : TYPE_STYLES[type]?.walkable ?? true,
-    color: els.structureObjectColorInput.value || TYPE_STYLES[type]?.line || TYPE_STYLES.custom.line,
+    type: normalizedType,
+    walkable: normalizedType === "custom" ? els.structureObjectWalkableInput.checked : TYPE_STYLES[normalizedType]?.walkable ?? true,
+    color: getStructureObjectInputColor(normalizedType, "", defaultColor),
     visible: true,
     polygon: [],
     areas: [],
+    eraseAreas: [],
     createdAt: new Date().toISOString()
   };
   editData.structureRegions.push(region);
   state.selectedStructureObjectId = region.id;
-  if (isLinearStructureType(type)) state.activeTool = "structureLine";
+  state.activeTool = isLinearStructureType(normalizedType) ? "structureLine" : "structurePolygon";
   state.structureListPage = Math.max(0, Math.ceil(editData.structureRegions.length / STRUCTURE_LIST_PAGE_SIZE) - 1);
   state.structureObjectListKey = "";
   markStructureLayerDirty();
@@ -5170,11 +5199,13 @@ function addStructureObject() {
 function updateSelectedStructureObject() {
   const selected = getSelectedStructureObject();
   if (!selected) return;
+  const previousType = selected.type || "custom";
   const type = els.structureObjectTypeInput.value || "custom";
   selected.name = els.structureObjectNameInput.value.trim() || getStructureObjectFallbackName(selected, { excludeId: selected.id });
   selected.type = TYPE_STYLES[type] ? type : "custom";
   selected.walkable = selected.type === "custom" ? els.structureObjectWalkableInput.checked : TYPE_STYLES[selected.type]?.walkable ?? true;
-  selected.color = els.structureObjectColorInput.value || TYPE_STYLES[selected.type]?.line || selected.color;
+  const defaultColor = TYPE_STYLES[selected.type]?.line || TYPE_STYLES.custom.line;
+  selected.color = getStructureObjectInputColor(selected.type, previousType, selected.color || defaultColor);
   selected.updatedAt = new Date().toISOString();
   for (const stroke of getSelectedEditData().judgementStrokes) {
     if (stroke.objectId !== selected.id) continue;
@@ -5195,6 +5226,16 @@ function updateSelectedStructureObject() {
   state.structureObjectListKey = "";
   renderEditorState();
   queueDraw();
+}
+
+function getStructureObjectInputColor(type, previousType, fallbackColor) {
+  const defaultColor = TYPE_STYLES[type]?.line || TYPE_STYLES.custom.line;
+  const inputColor = els.structureObjectColorInput.value || "";
+  const defaultColors = new Set(Object.values(TYPE_STYLES).map((style) => style.line));
+  const previousDefaultColor = TYPE_STYLES[previousType]?.line || "";
+  if (!inputColor) return fallbackColor || defaultColor;
+  if (type !== previousType && (inputColor === previousDefaultColor || defaultColors.has(inputColor))) return defaultColor;
+  return inputColor;
 }
 
 function deleteSelectedStructureObject() {
@@ -5488,6 +5529,11 @@ function isPointInStructureArea(point, area, region) {
   return isPointInArea(point, area);
 }
 
+function isPointInRegion(point, region) {
+  if (!getRegionAreas(region).some((area) => isPointInStructureArea(point, area, region))) return false;
+  return !getRegionEraseAreas(region).some((area) => isPointInArea(point, area));
+}
+
 function isPointOnAreaOutline(point, area, width = LINEAR_STRUCTURE_WIDTH) {
   const radius = Math.max(1, Number(width) / 2);
   const points = getAreaOutlinePoints(area);
@@ -5552,7 +5598,7 @@ function sampleStructureAt(point, options = {}) {
   const hits = [];
   for (const region of editData.structureRegions) {
     if (!includeHidden && region.visible === false) continue;
-    if (!getRegionAreas(region).some((area) => isPointInStructureArea(point, area, region))) continue;
+    if (!isPointInRegion(point, region)) continue;
     hits.push({
       id: region.id,
       name: region.name || "",
@@ -5648,6 +5694,9 @@ function translateEditDataForCrop(offsetX, offsetY, width, height) {
         .filter((point) => point.x >= 0 && point.y >= 0 && point.x <= width && point.y <= height),
       areas: getRegionAreas(region)
         .map((area) => translateAreaForCrop(area, offsetX, offsetY, width, height))
+        .filter(Boolean),
+      eraseAreas: getRegionEraseAreas(region)
+        .map((area) => translateAreaForCrop(area, offsetX, offsetY, width, height))
         .filter(Boolean)
     }))
     .filter((region) => region.polygon.length >= 3 || getRegionAreas(region).length > 0);
@@ -5683,7 +5732,8 @@ function rotateEditData(rotation, sourceSize) {
   editData.structureRegions = editData.structureRegions.map((region) => ({
     ...region,
     polygon: rotatePoints(region.polygon || [], rotation, sourceSize),
-    areas: getRegionAreas(region).map((area) => rotateArea(area, rotation, sourceSize)).filter(Boolean)
+    areas: getRegionAreas(region).map((area) => rotateArea(area, rotation, sourceSize)).filter(Boolean),
+    eraseAreas: getRegionEraseAreas(region).map((area) => rotateArea(area, rotation, sourceSize)).filter(Boolean)
   }));
   editData.judgementStrokes = editData.judgementStrokes.map((stroke) => ({
     ...stroke,
@@ -5861,6 +5911,12 @@ function undoStructureAction(action) {
   } else if (action.kind === "stroke") {
     const editData = getSelectedEditData();
     editData.judgementStrokes = editData.judgementStrokes.filter((stroke) => stroke.id !== action.strokeId);
+  } else if (action.kind === "eraseArea") {
+    const region = getSelectedEditData().structureRegions.find((item) => item.id === action.objectId);
+    if (!region) return;
+    const eraseAreas = getRegionEraseAreas(region);
+    eraseAreas.pop();
+    region.eraseAreas = eraseAreas;
   }
 }
 
@@ -6591,7 +6647,7 @@ function getStructureCacheScale() {
 function getStructureLayerCacheKey(editData, scale) {
   const visible = getVisibleStructureObjectIds();
   const regionKey = editData.structureRegions
-    .map((region) => `${region.id}:${region.visible !== false}:${getRegionAreaCount(region)}:${region.type}:${region.color || ""}`)
+    .map((region) => `${region.id}:${region.visible !== false}:${getRegionAreaCount(region)}:${getRegionEraseAreas(region).length}:${region.type}:${region.color || ""}`)
     .join("|");
   const strokeKey = editData.judgementStrokes
     .filter((stroke) => !stroke.objectId || visible.has(stroke.objectId))
@@ -6693,6 +6749,7 @@ function drawStructureRegionOnImage(ctx, region) {
       ctx.stroke();
     }
   }
+  eraseStructureRegionAreasOnImage(ctx, region);
   ctx.restore();
 }
 
@@ -6738,7 +6795,66 @@ function drawStructureRegion(ctx, region) {
       ctx.stroke();
     }
   }
+  eraseStructureRegionAreas(ctx, region);
   ctx.restore();
+}
+
+function eraseStructureRegionAreasOnImage(ctx, region) {
+  const eraseAreas = getRegionEraseAreas(region);
+  if (!eraseAreas.length) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.fillStyle = "#000";
+  ctx.strokeStyle = "#000";
+  for (const area of eraseAreas) {
+    drawImageEraseArea(ctx, area);
+  }
+  ctx.restore();
+}
+
+function eraseStructureRegionAreas(ctx, region) {
+  const eraseAreas = getRegionEraseAreas(region);
+  if (!eraseAreas.length) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.fillStyle = "#000";
+  ctx.strokeStyle = "#000";
+  for (const area of eraseAreas) {
+    drawScreenEraseArea(ctx, area);
+  }
+  ctx.restore();
+}
+
+function drawImageEraseArea(ctx, area) {
+  if (!area) return;
+  if (area.kind === "pixels") {
+    for (const run of area.pixels || []) ctx.fillRect(run.x, run.y, run.length, 1);
+    return;
+  }
+  if (area.kind === "line") {
+    ctx.lineWidth = Math.max(1, Number(area.width) || LINEAR_STRUCTURE_WIDTH);
+    makeImageAreaPath(ctx, area);
+    ctx.stroke();
+    return;
+  }
+  makeImageAreaPath(ctx, area);
+  ctx.fill();
+}
+
+function drawScreenEraseArea(ctx, area) {
+  if (!area) return;
+  if (area.kind === "pixels") {
+    for (const run of area.pixels || []) drawPixelRun(ctx, run);
+    return;
+  }
+  if (area.kind === "line") {
+    ctx.lineWidth = Math.max(1, (Number(area.width) || LINEAR_STRUCTURE_WIDTH) * state.view.scale);
+    drawScreenAreaPath(ctx, area);
+    ctx.stroke();
+    return;
+  }
+  drawScreenAreaPath(ctx, area);
+  ctx.fill();
 }
 
 function drawStructureLabels(ctx, editData) {
@@ -7330,6 +7446,7 @@ function normalizeChatMessage(source) {
 
 function normalizeEditData(data) {
   const source = data && typeof data === "object" ? data : {};
+  let migrated = false;
   const editData = {
     version: 1,
     cropPolygon: normalizePoints(source.cropPolygon),
@@ -7337,7 +7454,14 @@ function normalizeEditData(data) {
       ? source.backgroundStrokes.map(normalizeBackgroundStroke).filter(Boolean)
       : [],
     structureRegions: Array.isArray(source.structureRegions)
-      ? source.structureRegions.map(normalizeRegion).filter(Boolean)
+      ? source.structureRegions.map((region) => {
+        const normalized = normalizeRegion(region);
+        if (normalized?.__migrated) {
+          migrated = true;
+          delete normalized.__migrated;
+        }
+        return normalized;
+      }).filter(Boolean)
       : [],
     judgementStrokes: Array.isArray(source.judgementStrokes)
       ? source.judgementStrokes.map(normalizeJudgementStroke).filter(Boolean)
@@ -7347,6 +7471,7 @@ function normalizeEditData(data) {
       : []
   };
   mergeStructureSelectionsIntoRegions(editData);
+  if (migrated) editData.__migrated = true;
   return editData;
 }
 
@@ -7387,12 +7512,16 @@ function normalizeRegion(region) {
   if (!region || typeof region !== "object") return null;
   const polygon = normalizePoints(region.polygon);
   const areas = Array.isArray(region.areas) ? region.areas.map(normalizeArea).filter(Boolean) : [];
-  const type = TYPE_STYLES[region.type] ? region.type : "custom";
+  const rawType = TYPE_STYLES[region.type] ? region.type : "custom";
+  const type = inferStructureRegionType(region);
+  const migrated = type !== rawType || type === "gate" && hasLineLikeGateAreas(areas, polygon);
+  if (type === "gate") convertGateLineAreasToRegions(areas, polygon);
   if (polygon.length >= 2 && !areas.length && isLinearStructureType(type)) {
     areas.push({ kind: "line", points: polygon, width: LINEAR_STRUCTURE_WIDTH });
   } else if (polygon.length >= 3 && !areas.length) {
     areas.push({ kind: "polygon", points: polygon });
   }
+  const eraseAreas = Array.isArray(region.eraseAreas) ? region.eraseAreas.map(normalizeArea).filter(Boolean) : [];
   const walkable = getStructureTypeWalkable(type, region.walkable);
   return {
     id: typeof region.id === "string" ? region.id : createId("region"),
@@ -7403,7 +7532,55 @@ function normalizeRegion(region) {
     visible: region.visible !== false,
     polygon,
     areas,
-    createdAt: typeof region.createdAt === "string" ? region.createdAt : new Date().toISOString()
+    eraseAreas,
+    createdAt: typeof region.createdAt === "string" ? region.createdAt : new Date().toISOString(),
+    __migrated: migrated
+  };
+}
+
+function inferStructureRegionType(region) {
+  const rawType = TYPE_STYLES[region.type] ? region.type : "custom";
+  const name = String(region.name || "");
+  if (rawType === "custom" && /门/.test(name)) return "gate";
+  return rawType;
+}
+
+function convertGateLineAreasToRegions(areas, polygon) {
+  for (let index = 0; index < areas.length; index++) {
+    const area = areas[index];
+    if (area.kind !== "line") continue;
+    const converted = lineAreaToPolygonArea(area);
+    if (converted) areas[index] = converted;
+  }
+  if (areas.length || polygon.length < 2) return;
+  const converted = lineAreaToPolygonArea({ kind: "line", points: polygon, width: LINEAR_STRUCTURE_WIDTH });
+  if (converted) areas.push(converted);
+}
+
+function hasLineLikeGateAreas(areas, polygon) {
+  return areas.some((area) => area.kind === "line") || !areas.length && polygon.length >= 2;
+}
+
+function lineAreaToPolygonArea(area) {
+  const points = normalizePoints(area.points);
+  if (points.length < 2) return null;
+  const width = Math.max(1, Number(area.width) || LINEAR_STRUCTURE_WIDTH);
+  const first = points[0];
+  const last = points[points.length - 1];
+  const dx = last.x - first.x;
+  const dy = last.y - first.y;
+  const length = Math.hypot(dx, dy);
+  if (!length) return null;
+  const nx = (-dy / length) * width / 2;
+  const ny = (dx / length) * width / 2;
+  return {
+    kind: "polygon",
+    points: [
+      { x: first.x + nx, y: first.y + ny },
+      { x: last.x + nx, y: last.y + ny },
+      { x: last.x - nx, y: last.y - ny },
+      { x: first.x - nx, y: first.y - ny }
+    ]
   };
 }
 
@@ -7657,6 +7834,28 @@ function getEditData(schoolId) {
     const request = tx.objectStore(EDIT_DATA_STORE).get(schoolId);
     request.onsuccess = () => resolve(normalizeEditData(request.result));
     request.onerror = () => reject(request.error);
+  });
+}
+
+function migrateStoredEditData() {
+  if (!state.db) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = state.db.transaction(EDIT_DATA_STORE, "readwrite");
+    const store = tx.objectStore(EDIT_DATA_STORE);
+    const request = store.openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      const normalized = normalizeEditData(cursor.value);
+      if (normalized.__migrated) {
+        delete normalized.__migrated;
+        cursor.update(normalized);
+      }
+      cursor.continue();
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 
