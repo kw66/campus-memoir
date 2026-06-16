@@ -906,6 +906,38 @@ textarea.game-input {
   gap: 8px;
 }
 
+.editor-color-field {
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-strong);
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.editor-color-input {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: #fffdf7;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.editor-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.editor-color-input::-webkit-color-swatch {
+  border: 0;
+  border-radius: 50%;
+}
+
 .color-slot-row {
   grid-template-columns: 1fr 1fr;
 }
@@ -990,63 +1022,6 @@ textarea.game-input {
   outline-offset: 2px;
 }
 
-.color-popover {
-  position: fixed;
-  z-index: 30;
-  width: min(280px, calc(100vw - 16px));
-  padding: 10px;
-  display: grid;
-  gap: 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-}
-
-.popover-color-row {
-  display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-}
-
-.popover-color-row input[type="color"] {
-  width: 46px;
-  height: 34px;
-  padding: 2px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  background: #fffdf6;
-}
-
-.popover-color-row input[type="text"] {
-  min-width: 0;
-  height: 34px;
-  padding: 0 9px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  background: #fffdf6;
-  color: var(--text);
-  font-weight: 800;
-}
-
-.popover-swatches {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  max-height: 112px;
-  overflow: auto;
-}
-
-.popover-swatches button {
-  width: 26px;
-  height: 26px;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-  background: var(--swatch);
-  cursor: pointer;
-}
-
 .field {
   display: grid;
   gap: 4px;
@@ -1123,10 +1098,6 @@ textarea.game-input {
   display: grid;
   gap: 5px;
   overflow: hidden;
-}
-
-.structure-visibility-actions {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .structure-object-item {
@@ -1470,12 +1441,11 @@ textarea.game-input {
 .shape-toggle:focus-visible,
 .brush-shape-toggle:focus-visible,
 .color-slot:focus-visible,
+.editor-color-input:focus-visible,
 .layer-toggle:focus-visible,
 .mode-tab:focus-visible,
 .school-card:focus-visible,
-.swatches button:focus-visible,
-.popover-color-row input:focus-visible,
-.popover-swatches button:focus-visible {
+.swatches button:focus-visible {
   outline: 3px solid rgba(47, 111, 102, 0.25);
   outline-offset: 2px;
 }

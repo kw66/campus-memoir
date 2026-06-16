@@ -113,12 +113,10 @@
                 <output id="brushSizeReadout">24</output>
               </div>
               <div class="color-panel">
-                <div class="color-slot-row">
-                  <button class="color-slot active" data-color-slot="target" type="button">
-                    <span>颜色</span>
-                    <i data-color-preview="target"></i>
-                  </button>
-                </div>
+                <label class="editor-color-field">
+                  <span>颜色</span>
+                  <input class="editor-color-input" data-editor-color-input="target" type="color" value="#f5e9bd" aria-label="底图绘制颜色" />
+                </label>
                 <div class="palette-block">
                   <div class="palette-label">图中颜色</div>
                   <div class="swatches" data-palette="image" aria-label="图中颜色"></div>
@@ -144,12 +142,10 @@
                 <button class="shape-toggle" data-area-shape="ellipse" type="button">椭圆</button>
               </div>
               <div class="color-panel">
-                <div class="color-slot-row">
-                  <button class="color-slot active" data-color-slot="target" type="button">
-                    <span>颜色</span>
-                    <i data-color-preview="target"></i>
-                  </button>
-                </div>
+                <label class="editor-color-field">
+                  <span>颜色</span>
+                  <input class="editor-color-input" data-editor-color-input="target" type="color" value="#f5e9bd" aria-label="颜色替换目标颜色" />
+                </label>
                 <div class="palette-block">
                   <div class="palette-label">图中颜色</div>
                   <div class="swatches" data-palette="image" aria-label="图中颜色"></div>
@@ -331,14 +327,6 @@
         </div>
       </form>
     </dialog>
-
-    <div class="color-popover" id="colorPickerPopover" hidden>
-      <div class="popover-color-row">
-        <input id="popoverColorInput" type="color" value="#f5e9bd" aria-label="选择颜色" />
-        <input id="popoverHexInput" type="text" value="#f5e9bd" maxlength="7" spellcheck="false" aria-label="颜色值" />
-      </div>
-      <div class="popover-swatches" id="popoverSwatches" aria-label="图中颜色"></div>
-    </div>
 
     <script src="./src/app.js?v=20260616c"></script>
   </body>

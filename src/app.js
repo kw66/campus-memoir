@@ -228,7 +228,9 @@ const COMMAND_ICON_MAP = {
   deleteStructureObjectButton: ["trash", "删除"],
   commitStructureRegionButton: ["plusArea", "添加区域"],
   undoEditButton: ["undo", "撤销"],
-  clearDraftButton: ["clear", "清除草稿"]
+  clearDraftButton: ["clear", "清除草稿"],
+  showAllStructureButton: ["plusArea", "一键启用"],
+  hideAllStructureButton: ["clear", "一键隐藏"]
 };
 
 const ICON_SHORT_LABELS = {
@@ -252,6 +254,8 @@ const ICON_SHORT_LABELS = {
   右转90度: "右转",
   新增: "新增",
   删除: "删除",
+  一键启用: "启用",
+  一键隐藏: "隐藏",
   确定区域: "确定",
   添加区域: "添加",
   清除草稿: "清除"
@@ -383,7 +387,6 @@ const state = {
   mapRenderWarm: false,
   paletteRenderKey: "",
   structureObjectListKey: "",
-  colorPopoverOpen: false,
   suppressColorHistory: false
 };
 
@@ -452,14 +455,10 @@ const els = {
   commitCropButton: document.querySelector("#commitCropButton"),
   undoCropButton: document.querySelector("#undoCropButton"),
   saveCropButton: document.querySelector("#saveCropButton"),
-  colorSlots: document.querySelectorAll("[data-color-slot]"),
+  editorColorInputs: document.querySelectorAll("[data-editor-color-input]"),
   colorPreviews: document.querySelectorAll("[data-color-preview]"),
   imageColorPalettes: document.querySelectorAll('[data-palette="image"]'),
   commonColorPalettes: document.querySelectorAll('[data-palette="common"]'),
-  colorPickerPopover: document.querySelector("#colorPickerPopover"),
-  popoverColorInput: document.querySelector("#popoverColorInput"),
-  popoverHexInput: document.querySelector("#popoverHexInput"),
-  popoverSwatches: document.querySelector("#popoverSwatches"),
   shapeToggles: document.querySelectorAll(".shape-toggle"),
   brushShapeToggles: document.querySelectorAll(".brush-shape-toggle"),
   brushSize: document.querySelector("#brushSize"),
@@ -792,11 +791,10 @@ function bindEvents() {
     void saveCropDraft();
   });
 
-  for (const slot of els.colorSlots) {
-    slot.addEventListener("click", (event) => {
-      state.activeColorSlot = slot.dataset.colorSlot || "target";
-      renderEditorState();
-      openColorPopover(slot);
+  for (const input of els.editorColorInputs) {
+    input.addEventListener("input", () => {
+      state.activeColorSlot = input.dataset.editorColorInput || "target";
+      setActiveEditorColor(input.value);
     });
   }
   for (const palette of els.imageColorPalettes) {
@@ -813,26 +811,7 @@ function bindEvents() {
       setActiveEditorColor(button.dataset.color);
     });
   }
-  els.popoverColorInput.addEventListener("input", () => {
-    setActiveEditorColor(els.popoverColorInput.value);
-  });
-  els.popoverHexInput.addEventListener("input", () => {
-    const color = normalizeHexColor(els.popoverHexInput.value);
-    if (color) setActiveEditorColor(color);
-  });
-  els.popoverSwatches.addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-color]");
-    if (!button) return;
-    setActiveEditorColor(button.dataset.color);
-  });
-  document.addEventListener("pointerdown", (event) => {
-    if (!state.colorPopoverOpen) return;
-    if (els.colorPickerPopover.contains(event.target)) return;
-    if (event.target.closest("[data-color-slot]")) return;
-    closeColorPopover();
-  });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeColorPopover();
     if (!isTextEditingTarget(event.target) && handleGameKeyDown(event)) return;
     if (!isTextEditingTarget(event.target) && event.key.toLowerCase() === "f") {
       event.preventDefault();
@@ -3591,16 +3570,11 @@ function renderEditorState() {
     const color = preview.dataset.colorPreview === "source" ? state.sourceColor : state.brushColor;
     preview.style.setProperty("--slot-color", color);
   }
-  for (const slot of els.colorSlots) {
-    const label = slot.querySelector("span");
-    if (label) label.textContent = "颜色";
-    slot.classList.toggle("active", (slot.dataset.colorSlot || "target") === state.activeColorSlot);
+  for (const input of els.editorColorInputs) {
+    const color = input.dataset.editorColorInput === "source" ? state.sourceColor : state.brushColor;
+    if (input.value.toLowerCase() !== color.toLowerCase()) input.value = color;
   }
   renderPalettes();
-  if (state.colorPopoverOpen) {
-    if (!state.editorEnabled || !["base", "color"].includes(state.editorMode)) closeColorPopover();
-    else syncColorPopover();
-  }
   if (els.editorStatus) {
     els.editorStatus.hidden = !state.editorNotice || !state.editorEnabled || state.editorMode !== "structure";
     els.editorStatus.textContent = state.editorNotice || "";
@@ -3637,7 +3611,6 @@ function setEditLayer(layer) {
 
 function setEditorMode(mode) {
   const normalized = EDITOR_MODES.includes(mode) ? mode : "crop";
-  if (state.colorPopoverOpen && !["base", "color"].includes(normalized)) closeColorPopover();
   state.editorMode = normalized;
   state.editLayer = STRUCTURE_EDITOR_MODES.includes(normalized) ? "structure" : "base";
   state.showBaseLayer = true;
@@ -3695,45 +3668,6 @@ function isCurrentTool(tool) {
 
 function getActiveEditorColor() {
   return state.activeColorSlot === "source" ? state.sourceColor : state.brushColor;
-}
-
-function openColorPopover(anchor) {
-  if (!els.colorPickerPopover || !anchor) return;
-  state.colorPopoverOpen = true;
-  syncColorPopover();
-  els.colorPickerPopover.hidden = false;
-  positionColorPopover(anchor);
-}
-
-function closeColorPopover() {
-  state.colorPopoverOpen = false;
-  if (els.colorPickerPopover) els.colorPickerPopover.hidden = true;
-}
-
-function syncColorPopover() {
-  if (!els.colorPickerPopover) return;
-  const color = normalizeHexColor(getActiveEditorColor()) || "#000000";
-  if (els.popoverColorInput.value.toLowerCase() !== color) els.popoverColorInput.value = color;
-  if (document.activeElement !== els.popoverHexInput && els.popoverHexInput.value.toLowerCase() !== color) {
-    els.popoverHexInput.value = color;
-  }
-  renderPalette(els.popoverSwatches, state.imagePalette.map((item) => item.color), { image: true });
-}
-
-function positionColorPopover(anchor) {
-  const popover = els.colorPickerPopover;
-  if (!popover) return;
-  const margin = 8;
-  const rect = anchor.getBoundingClientRect();
-  const width = Math.min(popover.offsetWidth || 260, window.innerWidth - margin * 2);
-  const height = popover.offsetHeight || 120;
-  let left = rect.left;
-  let top = rect.bottom + margin;
-  if (top + height > window.innerHeight - margin) top = rect.top - height - margin;
-  left = clamp(left, margin, Math.max(margin, window.innerWidth - width - margin));
-  top = clamp(top, margin, Math.max(margin, window.innerHeight - height - margin));
-  popover.style.left = `${left}px`;
-  popover.style.top = `${top}px`;
 }
 
 function setActiveEditorColor(color, options = {}) {
@@ -7868,7 +7802,6 @@ function renderToText() {
       activeTool: state.activeTool,
       brushColor: state.brushColor,
       activeColorSlot: state.activeColorSlot,
-      colorPopoverOpen: state.colorPopoverOpen,
       imagePalette: state.imagePalette.map((item) => item.color),
       zoom: Number(state.view.scale.toFixed(3)),
       rotationDraft: state.rotationDraft,
