@@ -85,6 +85,7 @@ const DEFAULT_GAME_DATA = {
   selectedPhotoSpotId: "",
   selectedBuildingId: "",
   selectedSpotPhotoId: "",
+  selectedBuildingPhotoId: "",
   selectedRoomId: "",
   selectedItemId: "",
   selectedPersonId: "",
@@ -316,6 +317,7 @@ const state = {
   selectedNearbyInteractionKey: "",
   defaultPhotoSpotInteractionKey: "",
   selectedSpotPhotoForEditId: "",
+  selectedBuildingPhotoForEditId: "",
   gamePointerDown: null,
   editorEnabled: false,
   editorNotice: "",
@@ -2143,6 +2145,8 @@ function updateNearbyGameContext() {
   state.gameData.selectedPhotoSpotId = selected?.kind === "photoSpot" ? selected.id : "";
   state.gameData.selectedBuildingId = selected?.kind === "structure" ? selected.id : "";
   if (selected?.kind === "photoSpot") {
+    state.gameData.selectedBuildingPhotoId = "";
+    state.selectedBuildingPhotoForEditId = "";
     const selectedPhotoId = selected.spot?.photos?.[0]?.id || "";
     if (selectedPhotoId && !selected.spot.photos.some((photo) => photo.id === state.gameData.selectedSpotPhotoId)) {
       state.gameData.selectedSpotPhotoId = selectedPhotoId;
@@ -2152,6 +2156,17 @@ function updateNearbyGameContext() {
     }
   } else {
     state.selectedSpotPhotoForEditId = "";
+    if (selected?.kind === "structure") {
+      const building = getOrCreateBuildingMemory(selected.id);
+      const selectedPhotoId = getSelectedBuildingPhotoId(building);
+      state.gameData.selectedBuildingPhotoId = selectedPhotoId;
+      if (getSelectedBuildingPhotoForEditId(building) !== state.selectedBuildingPhotoForEditId) {
+        state.selectedBuildingPhotoForEditId = "";
+      }
+    } else {
+      state.gameData.selectedBuildingPhotoId = "";
+      state.selectedBuildingPhotoForEditId = "";
+    }
   }
   if (selected?.kind === "structure") getOrCreateBuildingMemory(selected.id);
 }
@@ -2479,18 +2494,13 @@ function renderPhotoPanelHtml(spot) {
   if (!spot) return "";
   const target = getSelectedNearbyInteractionTarget();
   const selectedId = getSelectedSpotPhotoId(spot);
-  const editSelectedId = getSelectedSpotPhotoForEditId(spot);
   const photoList = renderSpotPhotoListHtml(spot, selectedId);
   const spotTitle = getPhotoSpotDisplayName(spot);
   const canDeleteSpot = !spot.photos.length;
-  const manyPhotos = spot.photos.length > 1;
+  const editSelectedId = getSelectedSpotPhotoForEditId(spot);
   const editIndex = getSpotPhotoIndexById(spot, editSelectedId);
-  const prevAction = editSelectedId ? "moveSpotPhotoBackward" : "prevSpotPhoto";
-  const nextAction = editSelectedId ? "moveSpotPhotoForward" : "nextSpotPhoto";
-  const prevLabel = editSelectedId ? "前移" : "上一张";
-  const nextLabel = editSelectedId ? "后移" : "下一张";
-  const prevDisabled = editSelectedId ? editIndex <= 0 : !manyPhotos;
-  const nextDisabled = editSelectedId ? editIndex >= spot.photos.length - 1 : !manyPhotos;
+  const moveBackDisabled = editIndex <= 0;
+  const moveForwardDisabled = editIndex < 0 || editIndex >= spot.photos.length - 1;
   return `
     <section class="game-card photo-card">
       <div class="game-card-head">
@@ -2503,14 +2513,14 @@ function renderPhotoPanelHtml(spot) {
         <input class="game-input" data-game-field="photoSpotName" type="text" value="${escapeAttr(spot.name || "")}" placeholder="${escapeAttr(spotTitle)}">
         <input class="game-input" data-game-field="photoSpotDate" type="date" value="${escapeAttr(getPhotoSpotDateValue(spot))}">
       </div>
-      <div class="photo-list" data-photo-list="spot">
-        ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
-      </div>
       <div class="game-actions dense">
-        <button class="secondary-button" type="button" data-game-action="${prevAction}" ${prevDisabled ? "disabled" : ""}>${prevLabel}</button>
-        <button class="secondary-button" type="button" data-game-action="${nextAction}" ${nextDisabled ? "disabled" : ""}>${nextLabel}</button>
+        <button class="secondary-button" type="button" data-game-action="moveSpotPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
+        <button class="secondary-button" type="button" data-game-action="moveSpotPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
         <button class="secondary-button" type="button" data-game-action="uploadSpotPhoto">拍照</button>
         <button class="secondary-button danger" type="button" data-game-action="deletePhotoSpotSelected" ${canDeleteSpot || editSelectedId ? "" : "disabled"}>删除</button>
+      </div>
+      <div class="photo-list" data-photo-list="spot">
+        ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
       </div>
       ${state.gameNotice ? `<div class="game-notice">${escapeHtml(state.gameNotice)}</div>` : ""}
     </section>
@@ -2519,12 +2529,30 @@ function renderPhotoPanelHtml(spot) {
 
 function renderSpotPhotoListHtml(spot, selectedId) {
   const editSelectedId = getSelectedSpotPhotoForEditId(spot);
-  return (spot.photos || []).map((photo, index) => {
+  return renderPhotoTileListHtml(spot.photos || [], {
+    activeId: selectedId,
+    selectedId: editSelectedId,
+    action: "selectSpotPhoto"
+  });
+}
+
+function renderBuildingPhotoListHtml(building) {
+  const activeId = getSelectedBuildingPhotoId(building);
+  const selectedId = getSelectedBuildingPhotoForEditId(building);
+  return renderPhotoTileListHtml(building?.photos || [], {
+    activeId,
+    selectedId,
+    action: "selectBuildingPhoto"
+  });
+}
+
+function renderPhotoTileListHtml(photos, options) {
+  return (photos || []).map((photo, index) => {
     const url = getPhotoUrl(photo);
-    const active = photo.id === selectedId;
-    const selected = photo.id === editSelectedId;
+    const active = photo.id === options.activeId;
+    const selected = photo.id === options.selectedId;
     return `
-      <button class="photo-tile${active ? " active" : ""}${selected ? " selected" : ""}" type="button" data-game-action="selectSpotPhoto" data-photo-id="${escapeAttr(photo.id)}" data-photo-index="${index}">
+      <button class="photo-tile${active ? " active" : ""}${selected ? " selected" : ""}" type="button" data-game-action="${escapeAttr(options.action)}" data-photo-id="${escapeAttr(photo.id)}" data-photo-index="${index}">
         ${url ? `<img src="${url}" alt="">` : `<span>照片</span>`}
         <span class="photo-tile-index">${index + 1}</span>
       </button>
@@ -2540,26 +2568,29 @@ function renderCampusInteractionHtml(region, building) {
   const hasBuilding = Boolean(region && building);
   const category = building?.category || "other";
   const categories = Object.entries(BUILDING_CATEGORY_RULES).map(([key, rule]) => `<option value="${key}" ${key === category ? "selected" : ""}>${rule.label}</option>`).join("");
-  const buildingPhoto = building?.photos?.[clamp(building.activePhotoIndex || 0, 0, Math.max(0, building.photos.length - 1))] || null;
-  const buildingPhotoUrl = buildingPhoto ? getPhotoUrl(buildingPhoto) : "";
+  const photoList = renderBuildingPhotoListHtml(building);
+  const editSelectedId = getSelectedBuildingPhotoForEditId(building);
+  const editIndex = getBuildingPhotoIndexById(building, editSelectedId);
+  const moveBackDisabled = editIndex <= 0;
+  const moveForwardDisabled = editIndex < 0 || editIndex >= building.photos.length - 1;
   return `
     <section class="game-card campus-card">
       <div class="game-card-head"><strong>${escapeHtml(getStructureInteractionLabel(region))}</strong><span>${escapeHtml(TYPE_STYLES[region?.type || "custom"]?.label || "对象")}</span></div>
       <div class="building-editor" ${hasBuilding ? "" : "hidden"}>
         <input class="game-input" data-game-field="buildingName" type="text" value="${escapeAttr(building?.customName || region?.name || "")}" placeholder="建筑名称">
         <select class="game-input" data-game-field="buildingCategory">${categories}</select>
-        <div class="mini-photo">
-          ${buildingPhotoUrl ? `<img src="${buildingPhotoUrl}" alt="">` : `<span>建筑照片</span>`}
-        </div>
         <div class="game-actions dense">
+          <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
+          <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
           <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto">拍照</button>
-          <button class="secondary-button" type="button" data-game-action="prevBuildingPhoto" ${!building || building.photos.length < 2 ? "disabled" : ""}>上一张</button>
-          <button class="secondary-button" type="button" data-game-action="nextBuildingPhoto" ${!building || building.photos.length < 2 ? "disabled" : ""}>下一张</button>
-          <button class="secondary-button danger" type="button" data-game-action="deleteBuildingPhoto" ${!building || !building.photos.length ? "disabled" : ""}>删图</button>
+          <button class="secondary-button danger" type="button" data-game-action="deleteBuildingPhoto" ${!editSelectedId ? "disabled" : ""}>删图</button>
           <button class="secondary-button" type="button" data-game-action="uploadEntrancePhoto">设入口</button>
           <button class="primary-button" type="button" data-game-action="enterBuilding" ${!building?.entrances?.some((entry) => entry.photo) ? "disabled" : ""}>进入</button>
         </div>
         <div class="entrance-list">${renderEntranceListHtml(building)}</div>
+        <div class="photo-list building-photo-list" data-photo-list="building">
+          ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
+        </div>
       </div>
     </section>
   `;
@@ -2707,12 +2738,6 @@ function handleGameAction(action, button) {
     case "selectSpotPhoto":
       selectSpotPhoto(button.dataset.photoId || "");
       return;
-    case "prevSpotPhoto":
-      cycleSpotPhoto(-1);
-      return;
-    case "nextSpotPhoto":
-      cycleSpotPhoto(1);
-      return;
     case "moveSpotPhotoBackward":
       moveSelectedSpotPhoto(-1);
       return;
@@ -2731,11 +2756,14 @@ function handleGameAction(action, button) {
     case "uploadBuildingPhoto":
       els.buildingPhotoInput.click();
       return;
-    case "prevBuildingPhoto":
-      cycleBuildingPhoto(-1);
+    case "selectBuildingPhoto":
+      selectBuildingPhoto(button.dataset.photoId || "");
       return;
-    case "nextBuildingPhoto":
-      cycleBuildingPhoto(1);
+    case "moveBuildingPhotoBackward":
+      moveSelectedBuildingPhoto(-1);
+      return;
+    case "moveBuildingPhotoForward":
+      moveSelectedBuildingPhoto(1);
       return;
     case "deleteBuildingPhoto":
       deleteSelectedBuildingPhoto();
@@ -2914,9 +2942,27 @@ function getSpotPhotoIndexById(spot, photoId) {
   return spot.photos.findIndex((photo) => photo.id === photoId);
 }
 
+function getBuildingPhotoIndexById(building, photoId) {
+  if (!building || !photoId) return -1;
+  return building.photos.findIndex((photo) => photo.id === photoId);
+}
+
 function getSelectedSpotPhotoForEditId(spot) {
   const selected = state.selectedSpotPhotoForEditId;
   return getSpotPhotoIndexById(spot, selected) >= 0 ? selected : "";
+}
+
+function getSelectedBuildingPhotoId(building) {
+  if (!building?.photos?.length) return "";
+  const selected = state.gameData.selectedBuildingPhotoId;
+  if (selected && building.photos.some((photo) => photo.id === selected)) return selected;
+  const index = clamp(building.activePhotoIndex || 0, 0, building.photos.length - 1);
+  return building.photos[index]?.id || building.photos[0]?.id || "";
+}
+
+function getSelectedBuildingPhotoForEditId(building) {
+  const selected = state.selectedBuildingPhotoForEditId;
+  return getBuildingPhotoIndexById(building, selected) >= 0 ? selected : "";
 }
 
 function selectSpotPhoto(photoId) {
@@ -2925,20 +2971,6 @@ function selectSpotPhoto(photoId) {
   state.gameData.selectedSpotPhotoId = photoId;
   spot.activeIndex = spot.photos.findIndex((photo) => photo.id === photoId);
   state.selectedSpotPhotoForEditId = state.selectedSpotPhotoForEditId === photoId ? "" : photoId;
-  markGameDirty({ defer: true });
-  renderGamePanel({ force: true });
-}
-
-function cycleSpotPhoto(direction) {
-  const spot = getActivePhotoSpot();
-  if (!spot || spot.photos.length < 2) return;
-  const currentId = getSelectedSpotPhotoId(spot);
-  const currentIndex = Math.max(0, getSpotPhotoIndexById(spot, currentId));
-  const nextIndex = (currentIndex + Math.sign(direction || 1) + spot.photos.length) % spot.photos.length;
-  const photo = spot.photos[nextIndex];
-  state.gameData.selectedSpotPhotoId = photo.id;
-  state.selectedSpotPhotoForEditId = "";
-  spot.activeIndex = nextIndex;
   markGameDirty({ defer: true });
   renderGamePanel({ force: true });
 }
@@ -3031,7 +3063,10 @@ function selectBuilding(buildingId) {
   if (!region) return;
   state.gameData.selectedBuildingId = buildingId;
   state.selectedNearbyInteractionKey = `structure:${buildingId}`;
-  getOrCreateBuildingMemory(buildingId);
+  const building = getOrCreateBuildingMemory(buildingId);
+  state.gameData.selectedBuildingPhotoId = getSelectedBuildingPhotoId(building);
+  state.selectedBuildingPhotoForEditId = "";
+  state.selectedSpotPhotoForEditId = "";
   markGameDirty({ defer: true });
   renderGamePanel({ force: true });
   queueDraw();
@@ -3046,7 +3081,13 @@ function selectNearbyInteraction(key) {
   state.gameData.selectedBuildingId = target.kind === "structure" ? target.id : "";
   state.gameData.selectedSpotPhotoId = target.kind === "photoSpot" ? (target.spot?.photos?.[0]?.id || state.gameData.selectedSpotPhotoId || "") : state.gameData.selectedSpotPhotoId;
   state.selectedSpotPhotoForEditId = "";
-  if (target.kind === "structure") getOrCreateBuildingMemory(target.id);
+  if (target.kind === "structure") {
+    const building = getOrCreateBuildingMemory(target.id);
+    state.gameData.selectedBuildingPhotoId = getSelectedBuildingPhotoId(building);
+  } else {
+    state.gameData.selectedBuildingPhotoId = "";
+  }
+  state.selectedBuildingPhotoForEditId = "";
   markGameDirty({ defer: true });
   renderGamePanel({ force: true });
   queueDraw();
@@ -3076,25 +3117,53 @@ async function addPhotosToSelectedBuilding(files) {
   const records = await filesToResourceRecords(files);
   for (const record of records) building.photos.push(createPhotoFromResource(record));
   building.activePhotoIndex = Math.max(0, building.photos.length - 1);
+  const photo = building.photos[building.activePhotoIndex] || null;
+  state.gameData.selectedBuildingPhotoId = photo?.id || "";
+  state.selectedBuildingPhotoForEditId = photo?.id || "";
   building.updatedAt = new Date().toISOString();
   markGameDirty();
   renderGamePanel({ force: true });
 }
 
-function cycleBuildingPhoto(delta) {
+function selectBuildingPhoto(photoId) {
   const building = getSelectedBuildingMemory();
-  if (!building?.photos.length) return;
-  building.activePhotoIndex = wrapIndex((building.activePhotoIndex || 0) + delta, building.photos.length);
+  if (!building || !photoId || !building.photos.some((photo) => photo.id === photoId)) return;
+  state.gameData.selectedBuildingPhotoId = photoId;
+  building.activePhotoIndex = building.photos.findIndex((photo) => photo.id === photoId);
+  state.selectedBuildingPhotoForEditId = state.selectedBuildingPhotoForEditId === photoId ? "" : photoId;
   markGameDirty({ defer: true });
+  renderGamePanel({ force: true });
+}
+
+function moveSelectedBuildingPhoto(direction) {
+  const building = getSelectedBuildingMemory();
+  if (!building || building.photos.length < 2) return;
+  const selectedId = getSelectedBuildingPhotoForEditId(building);
+  const from = getBuildingPhotoIndexById(building, selectedId);
+  if (from < 0) return;
+  const to = clamp(from + Math.sign(direction || 1), 0, building.photos.length - 1);
+  if (from === to) return;
+  const [photo] = building.photos.splice(from, 1);
+  building.photos.splice(to, 0, photo);
+  building.activePhotoIndex = to;
+  state.gameData.selectedBuildingPhotoId = photo.id;
+  state.selectedBuildingPhotoForEditId = photo.id;
+  building.updatedAt = new Date().toISOString();
+  markGameDirty();
   renderGamePanel({ force: true });
 }
 
 function deleteSelectedBuildingPhoto() {
   const building = getSelectedBuildingMemory();
   if (!building?.photos.length) return;
-  const index = clamp(building.activePhotoIndex || 0, 0, building.photos.length - 1);
+  const selectedId = getSelectedBuildingPhotoForEditId(building);
+  const index = getBuildingPhotoIndexById(building, selectedId);
+  if (index < 0) return;
   building.photos.splice(index, 1);
-  building.activePhotoIndex = clamp(index, 0, Math.max(0, building.photos.length - 1));
+  const nextPhoto = building.photos[Math.min(index, building.photos.length - 1)] || null;
+  state.gameData.selectedBuildingPhotoId = nextPhoto?.id || "";
+  state.selectedBuildingPhotoForEditId = "";
+  building.activePhotoIndex = nextPhoto ? building.photos.findIndex((photo) => photo.id === nextPhoto.id) : 0;
   building.updatedAt = new Date().toISOString();
   markGameDirty();
   renderGamePanel({ force: true });
@@ -4470,7 +4539,9 @@ function handleGameCanvasClick(imagePoint) {
     state.defaultPhotoSpotInteractionKey = clickedSpot.key;
     state.gameData.selectedPhotoSpotId = clickedSpot.id;
     state.gameData.selectedBuildingId = "";
+    state.gameData.selectedBuildingPhotoId = "";
     state.selectedSpotPhotoForEditId = "";
+    state.selectedBuildingPhotoForEditId = "";
     renderGamePanel({ force: true });
     return;
   }
@@ -4479,7 +4550,9 @@ function handleGameCanvasClick(imagePoint) {
     state.selectedNearbyInteractionKey = target.key;
     state.gameData.selectedBuildingId = target.id;
     state.selectedSpotPhotoForEditId = "";
-    getOrCreateBuildingMemory(target.id);
+    const building = getOrCreateBuildingMemory(target.id);
+    state.gameData.selectedBuildingPhotoId = getSelectedBuildingPhotoId(building);
+    state.selectedBuildingPhotoForEditId = "";
     markGameDirty({ defer: true });
     renderGamePanel({ force: true });
   }
@@ -6845,6 +6918,7 @@ function normalizeGameData(source) {
   base.selectedPhotoSpotId = typeof source.selectedPhotoSpotId === "string" ? source.selectedPhotoSpotId : "";
   base.selectedBuildingId = typeof source.selectedBuildingId === "string" ? source.selectedBuildingId : "";
   base.selectedSpotPhotoId = typeof source.selectedSpotPhotoId === "string" ? source.selectedSpotPhotoId : "";
+  base.selectedBuildingPhotoId = typeof source.selectedBuildingPhotoId === "string" ? source.selectedBuildingPhotoId : "";
   base.selectedRoomId = typeof source.selectedRoomId === "string" ? source.selectedRoomId : "";
   base.selectedItemId = typeof source.selectedItemId === "string" ? source.selectedItemId : "";
   base.selectedPersonId = typeof source.selectedPersonId === "string" ? source.selectedPersonId : "";
@@ -7863,6 +7937,8 @@ function getGameTextState() {
       name: building.customName || getStructureRegionById(state.gameData.selectedBuildingId || state.gameData.location.buildingId)?.name || "",
       category: building.category,
       photoCount: building.photos.length,
+      selectedPhotoId: state.gameData.selectedBuildingPhotoId || "",
+      selectedPhotoForEditId: state.selectedBuildingPhotoForEditId || "",
       entranceCount: building.entrances.length,
       roomCount: building.rooms.length
     } : null,
