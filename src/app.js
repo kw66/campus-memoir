@@ -311,6 +311,7 @@ const state = {
   currentNearbyBuildingIds: [],
   selectedNearbyInteractionKey: "",
   defaultPhotoSpotInteractionKey: "",
+  selectedSpotPhotoForEditId: "",
   gamePointerDown: null,
   editorEnabled: false,
   editorNotice: "",
@@ -953,10 +954,6 @@ function bindEvents() {
   els.gamePanel.addEventListener("click", onGamePanelClick);
   els.gamePanel.addEventListener("input", onGamePanelInput);
   els.gamePanel.addEventListener("change", onGamePanelChange);
-  els.gamePanel.addEventListener("dragstart", onGamePanelDragStart);
-  els.gamePanel.addEventListener("dragover", onGamePanelDragOver);
-  els.gamePanel.addEventListener("drop", onGamePanelDrop);
-  els.gamePanel.addEventListener("dragend", onGamePanelDragEnd);
   els.spotPhotoInput.addEventListener("change", () => {
     const files = [...(els.spotPhotoInput.files || [])];
     els.spotPhotoInput.value = "";
@@ -2171,6 +2168,11 @@ function updateNearbyGameContext() {
     if (selectedPhotoId && !selected.spot.photos.some((photo) => photo.id === state.gameData.selectedSpotPhotoId)) {
       state.gameData.selectedSpotPhotoId = selectedPhotoId;
     }
+    if (getSelectedSpotPhotoForEditId(selected.spot) !== state.selectedSpotPhotoForEditId) {
+      state.selectedSpotPhotoForEditId = "";
+    }
+  } else {
+    state.selectedSpotPhotoForEditId = "";
   }
   if (selected?.kind === "structure") getOrCreateBuildingMemory(selected.id);
 }
@@ -2440,6 +2442,7 @@ function renderGamePanel(options = {}) {
     spotDate: spot?.capturedAt || "",
     spotVisible: spot?.visible !== false,
     spotSelectedPhotoId: state.gameData.selectedSpotPhotoId || "",
+    spotEditPhotoId: state.selectedSpotPhotoForEditId || "",
     marker: state.gameData.settings.showPhotoMarkers,
     structureMarker: state.gameData.settings.showInteractionMarkers,
     selectedTargetKey: selectedTarget?.key || "",
@@ -2498,9 +2501,18 @@ function renderPhotoPanelHtml(spot) {
   if (!spot) return "";
   const target = getSelectedNearbyInteractionTarget();
   const selectedId = getSelectedSpotPhotoId(spot);
+  const editSelectedId = getSelectedSpotPhotoForEditId(spot);
   const photoList = renderSpotPhotoListHtml(spot, selectedId);
   const spotTitle = getPhotoSpotDisplayName(spot);
   const canDeleteSpot = !spot.photos.length;
+  const manyPhotos = spot.photos.length > 1;
+  const editIndex = getSpotPhotoIndexById(spot, editSelectedId);
+  const prevAction = editSelectedId ? "moveSpotPhotoBackward" : "prevSpotPhoto";
+  const nextAction = editSelectedId ? "moveSpotPhotoForward" : "nextSpotPhoto";
+  const prevLabel = editSelectedId ? "前移" : "上一张";
+  const nextLabel = editSelectedId ? "后移" : "下一张";
+  const prevDisabled = editSelectedId ? editIndex <= 0 : !manyPhotos;
+  const nextDisabled = editSelectedId ? editIndex >= spot.photos.length - 1 : !manyPhotos;
   return `
     <section class="game-card photo-card">
       <div class="game-card-head">
@@ -2521,9 +2533,11 @@ function renderPhotoPanelHtml(spot) {
         ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
       </div>
       <div class="game-actions dense">
+        <button class="secondary-button" type="button" data-game-action="${prevAction}" ${prevDisabled ? "disabled" : ""}>${prevLabel}</button>
+        <button class="secondary-button" type="button" data-game-action="${nextAction}" ${nextDisabled ? "disabled" : ""}>${nextLabel}</button>
         <button class="secondary-button" type="button" data-game-action="savePhotoSpot">保存</button>
         <button class="secondary-button" type="button" data-game-action="uploadSpotPhoto">拍照</button>
-        <button class="secondary-button danger" type="button" data-game-action="deletePhotoSpotSelected" ${canDeleteSpot || selectedId ? "" : "disabled"}>删除</button>
+        <button class="secondary-button danger" type="button" data-game-action="deletePhotoSpotSelected" ${canDeleteSpot || editSelectedId ? "" : "disabled"}>删除</button>
       </div>
       ${state.gameNotice ? `<div class="game-notice">${escapeHtml(state.gameNotice)}</div>` : ""}
     </section>
@@ -2531,11 +2545,13 @@ function renderPhotoPanelHtml(spot) {
 }
 
 function renderSpotPhotoListHtml(spot, selectedId) {
+  const editSelectedId = getSelectedSpotPhotoForEditId(spot);
   return (spot.photos || []).map((photo, index) => {
     const url = getPhotoUrl(photo);
     const active = photo.id === selectedId;
+    const selected = photo.id === editSelectedId;
     return `
-      <button class="photo-tile${active ? " active" : ""}" type="button" draggable="true" data-game-action="selectSpotPhoto" data-photo-id="${escapeAttr(photo.id)}" data-photo-index="${index}">
+      <button class="photo-tile${active ? " active" : ""}${selected ? " selected" : ""}" type="button" data-game-action="selectSpotPhoto" data-photo-id="${escapeAttr(photo.id)}" data-photo-index="${index}">
         ${url ? `<img src="${url}" alt="">` : `<span>照片</span>`}
         <span class="photo-tile-index">${index + 1}</span>
       </button>
@@ -2718,38 +2734,6 @@ function onGamePanelChange(event) {
   if (control) setActivePhotoSpotVisible(control.checked);
 }
 
-function onGamePanelDragStart(event) {
-  const tile = event.target.closest(".photo-tile[data-photo-index]");
-  if (!tile) return;
-  event.dataTransfer.effectAllowed = "move";
-  event.dataTransfer.setData("text/plain", tile.dataset.photoIndex || "");
-  state.gamePanel.classList.add("photo-dragging");
-  tile.classList.add("dragging");
-}
-
-function onGamePanelDragOver(event) {
-  const tile = event.target.closest(".photo-tile[data-photo-index]");
-  if (!tile) return;
-  event.preventDefault();
-  event.dataTransfer.dropEffect = "move";
-}
-
-function onGamePanelDrop(event) {
-  const tile = event.target.closest(".photo-tile[data-photo-index]");
-  if (!tile) return;
-  event.preventDefault();
-  const from = Number(event.dataTransfer.getData("text/plain"));
-  const to = Number(tile.dataset.photoIndex);
-  if (!Number.isFinite(from) || !Number.isFinite(to)) return;
-  reorderSpotPhotos(from, to);
-}
-
-function onGamePanelDragEnd(event) {
-  state.gamePanel.classList.remove("photo-dragging");
-  const tile = event.target.closest(".photo-tile");
-  if (tile) tile.classList.remove("dragging");
-}
-
 function handleGameAction(action, button) {
   switch (action) {
     case "uploadSpotPhoto":
@@ -2763,6 +2747,18 @@ function handleGameAction(action, button) {
       return;
     case "selectSpotPhoto":
       selectSpotPhoto(button.dataset.photoId || "");
+      return;
+    case "prevSpotPhoto":
+      cycleSpotPhoto(-1);
+      return;
+    case "nextSpotPhoto":
+      cycleSpotPhoto(1);
+      return;
+    case "moveSpotPhotoBackward":
+      moveSelectedSpotPhoto(-1);
+      return;
+    case "moveSpotPhotoForward":
+      moveSelectedSpotPhoto(1);
       return;
     case "deletePhotoSpotSelected":
       deleteSelectedPhotoOrSpot();
@@ -2888,6 +2884,7 @@ async function addPhotosAtPlayer(files) {
   }
   spot.activeIndex = Math.max(0, spot.photos.length - 1);
   state.gameData.selectedSpotPhotoId = spot.photos[spot.activeIndex]?.id || "";
+  state.selectedSpotPhotoForEditId = "";
   spot.updatedAt = new Date().toISOString();
   state.gameData.selectedPhotoSpotId = spot.id;
   setGameNotice(`已添加 ${records.length} 张照片`);
@@ -2924,6 +2921,7 @@ function createPhotoSpotAtPlayer(options = {}) {
   state.gameData.photoSpots.push(spot);
   state.gameData.selectedPhotoSpotId = spot.id;
   state.gameData.selectedSpotPhotoId = "";
+  state.selectedSpotPhotoForEditId = "";
   state.selectedNearbyInteractionKey = `photoSpot:${spot.id}`;
   updateNearbyGameContext();
   markGameDirty();
@@ -2955,25 +2953,62 @@ function getSelectedSpotPhotoId(spot) {
   return spot.photos[index]?.id || spot.photos[0]?.id || "";
 }
 
+function getSpotPhotoIndexById(spot, photoId) {
+  if (!spot || !photoId) return -1;
+  return spot.photos.findIndex((photo) => photo.id === photoId);
+}
+
+function getSelectedSpotPhotoForEditId(spot) {
+  const selected = state.selectedSpotPhotoForEditId;
+  return getSpotPhotoIndexById(spot, selected) >= 0 ? selected : "";
+}
+
 function selectSpotPhoto(photoId) {
   const spot = getActivePhotoSpot();
   if (!spot || !photoId || !spot.photos.some((photo) => photo.id === photoId)) return;
   state.gameData.selectedSpotPhotoId = photoId;
   spot.activeIndex = spot.photos.findIndex((photo) => photo.id === photoId);
+  state.selectedSpotPhotoForEditId = state.selectedSpotPhotoForEditId === photoId ? "" : photoId;
   markGameDirty({ defer: true });
   renderGamePanel({ force: true });
+}
+
+function cycleSpotPhoto(direction) {
+  const spot = getActivePhotoSpot();
+  if (!spot || spot.photos.length < 2) return;
+  const currentId = getSelectedSpotPhotoId(spot);
+  const currentIndex = Math.max(0, getSpotPhotoIndexById(spot, currentId));
+  const nextIndex = (currentIndex + Math.sign(direction || 1) + spot.photos.length) % spot.photos.length;
+  const photo = spot.photos[nextIndex];
+  state.gameData.selectedSpotPhotoId = photo.id;
+  state.selectedSpotPhotoForEditId = "";
+  spot.activeIndex = nextIndex;
+  markGameDirty({ defer: true });
+  renderGamePanel({ force: true });
+}
+
+function moveSelectedSpotPhoto(direction) {
+  const spot = getActivePhotoSpot();
+  if (!spot || spot.photos.length < 2) return;
+  const selectedId = getSelectedSpotPhotoForEditId(spot);
+  const from = getSpotPhotoIndexById(spot, selectedId);
+  if (from < 0) return;
+  const to = clamp(from + Math.sign(direction || 1), 0, spot.photos.length - 1);
+  if (from === to) return;
+  reorderSpotPhotos(from, to);
 }
 
 function deleteSelectedPhotoOrSpot() {
   const spot = getActivePhotoSpot();
   if (!spot) return;
-  const selectedPhotoId = getSelectedSpotPhotoId(spot);
+  const selectedPhotoId = getSelectedSpotPhotoForEditId(spot);
   if (selectedPhotoId) {
     const index = spot.photos.findIndex((photo) => photo.id === selectedPhotoId);
     if (index >= 0) {
       spot.photos.splice(index, 1);
       const nextPhoto = spot.photos[Math.min(index, spot.photos.length - 1)] || null;
       state.gameData.selectedSpotPhotoId = nextPhoto?.id || "";
+      state.selectedSpotPhotoForEditId = "";
       spot.activeIndex = nextPhoto ? spot.photos.findIndex((photo) => photo.id === nextPhoto.id) : 0;
       spot.updatedAt = new Date().toISOString();
       setGameNotice("图片已删除");
@@ -2993,6 +3028,7 @@ function deleteActiveSpot() {
   state.gameData.photoSpots = state.gameData.photoSpots.filter((item) => item.id !== spot.id);
   state.gameData.selectedPhotoSpotId = "";
   state.gameData.selectedSpotPhotoId = "";
+  state.selectedSpotPhotoForEditId = "";
   state.currentNearbyPhotoSpotId = "";
   state.selectedNearbyInteractionKey = "";
   state.defaultPhotoSpotInteractionKey = "";
@@ -3037,6 +3073,7 @@ function reorderSpotPhotos(fromIndex, toIndex) {
   const [photo] = spot.photos.splice(from, 1);
   spot.photos.splice(to, 0, photo);
   state.gameData.selectedSpotPhotoId = photo.id;
+  state.selectedSpotPhotoForEditId = photo.id;
   spot.activeIndex = to;
   spot.updatedAt = new Date().toISOString();
   markGameDirty();
@@ -3062,6 +3099,7 @@ function selectNearbyInteraction(key) {
   state.gameData.selectedPhotoSpotId = target.kind === "photoSpot" ? target.id : "";
   state.gameData.selectedBuildingId = target.kind === "structure" ? target.id : "";
   state.gameData.selectedSpotPhotoId = target.kind === "photoSpot" ? (target.spot?.photos?.[0]?.id || state.gameData.selectedSpotPhotoId || "") : state.gameData.selectedSpotPhotoId;
+  state.selectedSpotPhotoForEditId = "";
   if (target.kind === "structure") getOrCreateBuildingMemory(target.id);
   markGameDirty({ defer: true });
   renderGamePanel({ force: true });
@@ -4531,6 +4569,7 @@ function handleGameCanvasClick(imagePoint) {
     state.defaultPhotoSpotInteractionKey = clickedSpot.key;
     state.gameData.selectedPhotoSpotId = clickedSpot.id;
     state.gameData.selectedBuildingId = "";
+    state.selectedSpotPhotoForEditId = "";
     renderGamePanel({ force: true });
     return;
   }
@@ -4538,6 +4577,7 @@ function handleGameCanvasClick(imagePoint) {
   if (target) {
     state.selectedNearbyInteractionKey = target.key;
     state.gameData.selectedBuildingId = target.id;
+    state.selectedSpotPhotoForEditId = "";
     getOrCreateBuildingMemory(target.id);
     markGameDirty({ defer: true });
     renderGamePanel({ force: true });
@@ -7912,6 +7952,7 @@ function getGameTextState() {
     activePhotoSpotName: spot ? getPhotoSpotDisplayName(spot) : "",
     activePhotoCount: spot?.photos?.length || 0,
     selectedSpotPhotoId: state.gameData.selectedSpotPhotoId || "",
+    selectedSpotPhotoForEditId: state.selectedSpotPhotoForEditId || "",
     nearbyPhotoSpotId: state.currentNearbyPhotoSpotId || "",
     showPhotoMarkers: state.gameData.settings.showPhotoMarkers,
     showInteractionMarkers: state.gameData.settings.showInteractionMarkers,
