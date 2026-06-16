@@ -348,8 +348,12 @@ button:disabled {
   min-height: 0;
   flex: 1 1 auto;
   display: grid;
-  grid-template-rows: auto auto auto minmax(360px, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(260px, 1fr) auto;
   overflow: hidden;
+}
+
+.photo-card.entrance-card {
+  grid-template-rows: auto auto auto auto minmax(220px, 1fr) auto;
 }
 
 .spot-fields {
@@ -471,6 +475,7 @@ button:disabled {
 .game-actions {
   display: grid;
   gap: 7px;
+  align-items: stretch;
 }
 
 .game-actions.dense {
@@ -483,6 +488,7 @@ button:disabled {
   min-height: 32px;
   padding: 0 8px;
   font-size: 12px;
+  align-self: stretch;
 }
 
 .switch-row {
@@ -548,18 +554,6 @@ button:disabled {
   color: var(--accent-strong);
   font-size: 12px;
   font-weight: 900;
-}
-
-.mini-danger {
-  min-height: 22px;
-  padding: 0 6px;
-  border: 1px solid var(--danger);
-  border-radius: 5px;
-  background: #fff6f0;
-  color: var(--danger);
-  font-size: 11px;
-  font-weight: 900;
-  cursor: pointer;
 }
 
 .building-chip.active,

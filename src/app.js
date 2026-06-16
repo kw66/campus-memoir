@@ -2534,13 +2534,14 @@ function renderPhotoPanelHtml(spot) {
   const photoList = renderSpotPhotoListHtml(spot, selectedId);
   const spotTitle = getPhotoSpotDisplayName(spot);
   const entranceTarget = getEntranceBuildingForSpot(spot);
+  const entranceActive = Boolean(entranceTarget && spot.photos.length);
   const canDeleteSpot = !spot.photos.length;
   const editSelectedId = getSelectedSpotPhotoForEditId(spot);
   const editIndex = getSpotPhotoIndexById(spot, editSelectedId);
   const moveBackDisabled = editIndex <= 0;
   const moveForwardDisabled = editIndex < 0 || editIndex >= spot.photos.length - 1;
   return `
-    <section class="game-card photo-card">
+    <section class="game-card photo-card${entranceTarget ? " entrance-card" : ""}">
       <div class="game-card-head">
         <strong>${escapeHtml(spotTitle)}</strong>
         <div class="game-card-head-actions">
@@ -2553,7 +2554,7 @@ function renderPhotoPanelHtml(spot) {
       </div>
       ${entranceTarget ? `<div class="entrance-target">入口：${escapeHtml(getBuildingDisplayName(entranceTarget.region, entranceTarget.building))}</div>` : ""}
       <div class="game-actions dense">
-        ${entranceTarget ? `<button class="primary-button" type="button" data-game-action="enterFromPhotoSpot">进入</button>` : ""}
+        ${entranceTarget ? `<button class="primary-button" type="button" data-game-action="enterFromPhotoSpot" ${entranceActive ? "" : "disabled"}>进入</button>` : ""}
         <button class="secondary-button" type="button" data-game-action="moveSpotPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
         <button class="secondary-button" type="button" data-game-action="moveSpotPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
         <button class="secondary-button" type="button" data-game-action="uploadSpotPhoto">拍照</button>
@@ -2639,7 +2640,6 @@ function renderEntranceListHtml(region, building) {
   return entries.map(({ spot }, index) => `
     <span class="entrance-row">
       ${escapeHtml(getPhotoSpotDisplayName(spot) || `入口${index + 1}`)}${spot.photos.length ? " 有图" : ""}
-      <button class="mini-danger" type="button" data-game-action="unlinkEntrance" data-spot-id="${escapeAttr(spot.id)}">删</button>
     </span>
   `).join("");
 }
@@ -2808,9 +2808,6 @@ function handleGameAction(action, button) {
       return;
     case "linkPhotoSpotEntrance":
       linkNearbyPhotoSpotAsEntrance();
-      return;
-    case "unlinkEntrance":
-      unlinkPhotoSpotEntrance(button.dataset.spotId || "");
       return;
     case "enterFromPhotoSpot":
       enterFromActivePhotoSpot();
@@ -3291,26 +3288,16 @@ function linkNearbyPhotoSpotAsEntrance() {
   queueDraw();
 }
 
-function unlinkPhotoSpotEntrance(spotId) {
-  const spot = state.gameData.photoSpots.find((item) => item.id === spotId);
-  const entrance = getPhotoSpotEntrance(spot);
-  const building = entrance ? state.gameData.buildings[entrance.buildingId] : getSelectedBuildingMemory();
-  if (!spot || !building) return;
-  building.entrances = normalizeBuildingEntranceRefs(building.entrances).filter((entry) => entry.photoSpotId !== spot.id);
-  building.updatedAt = new Date().toISOString();
-  delete spot.entranceFor;
-  spot.updatedAt = new Date().toISOString();
-  markGameDirty();
-  setGameNotice("入口已取消");
-  renderGamePanel({ force: true });
-  queueDraw();
-}
-
 function enterFromActivePhotoSpot() {
   const spot = getActivePhotoSpot();
   const entranceTarget = getEntranceBuildingForSpot(spot);
   if (!spot || !entranceTarget || !isPlayerCircleTouchingPhotoSpot(spot)) {
     setGameNotice("需要站在入口附近");
+    renderGamePanel({ force: true });
+    return;
+  }
+  if (!spot.photos.length) {
+    setGameNotice("入口需要先拍照");
     renderGamePanel({ force: true });
     return;
   }
