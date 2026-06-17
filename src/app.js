@@ -3573,7 +3573,8 @@ function calculateExplorationProgress(editData, gameData) {
 
 function getExplorationGridSize(width, height) {
   const base = Math.sqrt((width * height) / (EXPLORATION_TARGET_GRID_COUNT * EXPLORATION_TARGET_GRID_COUNT));
-  return clamp(Math.round(base / 10) * 10, EXPLORATION_MIN_GRID_SIZE, EXPLORATION_MAX_GRID_SIZE);
+  const smallGridSize = clamp(Math.round(base / 10) * 10, EXPLORATION_MIN_GRID_SIZE, EXPLORATION_MAX_GRID_SIZE);
+  return smallGridSize * 4;
 }
 
 function getExplorationCellBounds(col, row, gridSize, width, height) {

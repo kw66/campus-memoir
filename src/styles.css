@@ -354,11 +354,14 @@ button:disabled {
   min-width: 0;
 }
 
+.map-panel {
+  position: relative;
+}
+
 .map-toolbar {
   display: grid;
-  grid-template-columns: minmax(170px, 220px) minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
+  grid-template-columns: 1fr;
+  gap: 6px;
   margin-bottom: 8px;
 }
 
@@ -400,6 +403,7 @@ button:disabled {
 
 .exploration-progress {
   min-width: 0;
+  width: 100%;
   padding: 6px 8px;
   border: 1px solid color-mix(in srgb, var(--line-strong), transparent 22%);
   border-radius: 7px;
@@ -441,10 +445,15 @@ button:disabled {
 }
 
 .map-actions {
+  position: absolute;
+  top: 56px;
+  right: 10px;
+  z-index: 3;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
+  max-width: calc(100% - 84px);
   gap: 7px;
   padding: 6px;
   border: 1px solid color-mix(in srgb, var(--line-strong), transparent 16%);
@@ -1887,9 +1896,12 @@ textarea.game-input {
   }
 
   .map-actions {
+    position: static;
+    z-index: auto;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     justify-content: stretch;
+    max-width: none;
     gap: 5px;
     padding: 5px;
   }
