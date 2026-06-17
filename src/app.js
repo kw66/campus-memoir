@@ -85,7 +85,8 @@ const DEFAULT_GAME_DATA = {
   },
   settings: {
     showPhotoMarkers: true,
-    showInteractionMarkers: true
+    showInteractionMarkers: true,
+    showPeopleMarkers: true
   },
   location: {
     kind: "campus",
@@ -349,6 +350,7 @@ const state = {
   gamePanelKey: "",
   gameNotice: "",
   photoUrlCache: new Map(),
+  photoImageCache: new Map(),
   movementKeys: new Set(),
   lastGameFrameTime: 0,
   gameLoopRunning: false,
@@ -470,6 +472,7 @@ const els = {
   mapPhotoButton: document.querySelector("#mapPhotoButton"),
   mapPhotoMarkersToggle: document.querySelector("#mapPhotoMarkersToggle"),
   mapInteractionMarkersToggle: document.querySelector("#mapInteractionMarkersToggle"),
+  mapPeopleMarkersToggle: document.querySelector("#mapPeopleMarkersToggle"),
   panelHeader: document.querySelector("#panelHeader"),
   panelKicker: document.querySelector("#panelKicker"),
   infoTitle: document.querySelector("#infoTitle"),
@@ -615,7 +618,12 @@ async function init() {
       },
       getCurrentAreaDraft,
       createParallelogramAreaFromThreePoints,
-      normalizeArea
+      normalizeArea,
+      initializeGameForCurrentMap,
+      updateNearbyGameContext,
+      followPlayer,
+      renderGamePanel,
+      queueDraw
     };
   }
 }
@@ -717,6 +725,12 @@ function bindEvents() {
   });
   els.mapInteractionMarkersToggle.addEventListener("change", () => {
     state.gameData.settings.showInteractionMarkers = els.mapInteractionMarkersToggle.checked;
+    markGameDirty({ defer: true });
+    renderGamePanel({ force: true });
+    queueDraw();
+  });
+  els.mapPeopleMarkersToggle.addEventListener("change", () => {
+    state.gameData.settings.showPeopleMarkers = els.mapPeopleMarkersToggle.checked;
     markGameDirty({ defer: true });
     renderGamePanel({ force: true });
     queueDraw();
@@ -2850,6 +2864,22 @@ function getPersonDisplayName(person) {
   return person?.name || person?.type || "未命名";
 }
 
+function getPersonMarkerLabel(person, room = null) {
+  const relation = person?.type || (room?.type === "寝室" && room.relation ? room.relation : "人物");
+  const name = getPersonDisplayName(person);
+  return relation && name && name !== relation ? `${relation}${name}` : name || relation || "人物";
+}
+
+function getBuildingPeople(building) {
+  const entries = [];
+  for (const room of building?.rooms || []) {
+    for (const person of room.people || []) {
+      entries.push({ person, room });
+    }
+  }
+  return entries;
+}
+
 function getItemDisplayName(item, fallback = "物品") {
   return item?.name || item?.type || fallback;
 }
@@ -2870,6 +2900,50 @@ function getPhotoUrl(photo) {
   return url;
 }
 
+function getFirstPhoto(entity) {
+  return Array.isArray(entity?.photos) && entity.photos.length ? entity.photos[0] : null;
+}
+
+function getRepresentativePhotoUrl(entity) {
+  return getPhotoUrl(getFirstPhoto(entity));
+}
+
+function getCachedPhotoImage(photo) {
+  if (!photo?.resource) return null;
+  const url = getPhotoUrl(photo);
+  if (!url) return null;
+  const key = photo.id || url;
+  const cached = state.photoImageCache.get(key);
+  if (cached?.image) return cached.image;
+  const image = new Image();
+  state.photoImageCache.set(key, { image, loaded: false });
+  image.onload = () => {
+    const entry = state.photoImageCache.get(key);
+    if (entry) entry.loaded = true;
+    queueDraw();
+  };
+  image.onerror = () => {
+    state.photoImageCache.delete(key);
+  };
+  image.src = url;
+  return image;
+}
+
+function isPhotoImageReady(image) {
+  return Boolean(image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0);
+}
+
+function drawCoverImage(ctx, image, x, y, width, height) {
+  if (!isPhotoImageReady(image) || width <= 0 || height <= 0) return false;
+  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+  const sourceWidth = width / scale;
+  const sourceHeight = height / scale;
+  const sourceX = (image.naturalWidth - sourceWidth) / 2;
+  const sourceY = (image.naturalHeight - sourceHeight) / 2;
+  ctx.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
+  return true;
+}
+
 function renderGamePanel(options = {}) {
   const school = getSelectedSchool();
   const visible = Boolean(school && state.mapImage && !state.editorEnabled);
@@ -2879,6 +2953,7 @@ function renderGamePanel(options = {}) {
   els.zoomReadout.hidden = visible && insideBuilding;
   els.mapPhotoMarkersToggle.checked = state.gameData.settings.showPhotoMarkers !== false;
   els.mapInteractionMarkersToggle.checked = state.gameData.settings.showInteractionMarkers !== false;
+  els.mapPeopleMarkersToggle.checked = state.gameData.settings.showPeopleMarkers !== false;
   if (!visible) return;
   els.gamePanel.classList.toggle("inside-building", insideBuilding);
   els.panelHeader.hidden = true;
@@ -2903,6 +2978,7 @@ function renderGamePanel(options = {}) {
     spotEntrance: spot ? getPhotoSpotEntrance(spot)?.buildingId || "" : "",
     marker: state.gameData.settings.showPhotoMarkers,
     structureMarker: state.gameData.settings.showInteractionMarkers,
+    peopleMarker: state.gameData.settings.showPeopleMarkers,
     selectedTargetKey: selectedTarget?.key || "",
     nearbyTargets: state.currentNearbyInteractionTargets.map((item) => item.key).join(","),
     buildingId: state.gameData.selectedBuildingId,
@@ -3092,16 +3168,14 @@ function renderInteriorPanelHtml(building, room, item, person) {
   const people = room?.people?.map((item) => `
     <button class="person-chip${item.id === state.gameData.selectedPersonId ? " active" : ""}" type="button" data-game-action="selectPerson" data-person-id="${escapeAttr(item.id)}">${escapeHtml(getPersonDisplayName(item))}</button>
   `).join("") || "";
-  const roomPhoto = room?.photos?.[clamp(room.activePhotoIndex || 0, 0, Math.max(0, (room.photos?.length || 1) - 1))] || null;
-  const roomPhotoUrl = roomPhoto ? getPhotoUrl(roomPhoto) : "";
+  const roomPhotoUrl = getRepresentativePhotoUrl(room);
   const dormPlayerPortraitHtml = room?.type === "寝室" ? `
         <div class="player-portrait-card">
           <span class="player-portrait-status">${state.gameData.player.portrait ? "形象已设置" : "形象未设置"}</span>
           <button class="secondary-button" type="button" data-game-action="uploadPlayerPortrait">设形象</button>
         </div>
   ` : "";
-  const itemPhoto = item?.photos?.[clamp(item.activePhotoIndex || 0, 0, Math.max(0, (item.photos?.length || 1) - 1))] || null;
-  const itemPhotoUrl = itemPhoto ? getPhotoUrl(itemPhoto) : "";
+  const itemPhotoUrl = getRepresentativePhotoUrl(item);
   const personPhotoUrl = person?.photo ? getPhotoUrl(person.photo) : "";
   return `
     <section class="game-card interior-card">
@@ -6778,13 +6852,139 @@ function drawNearbyBuildingLabels(ctx, editData) {
     });
     const isNearby = nearby.has(region.id);
     const selected = region.id === state.gameData.selectedBuildingId;
-    drawGameLabel(ctx, getStructureInteractionLabel(region), center.x, center.y, {
+    drawBuildingMarkerCard(ctx, region, center, {
       selected,
       nearby: isNearby,
       maxWidth: 220,
       font: "800 13px Microsoft YaHei, sans-serif"
     });
   }
+}
+
+function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
+  const building = state.gameData.buildings[region.id] || null;
+  const label = getStructureInteractionLabel(region);
+  const photo = getFirstPhoto(building);
+  const image = photo ? getCachedPhotoImage(photo) : null;
+  const people = state.gameData.settings.showPeopleMarkers !== false ? getBuildingPeople(building) : [];
+  const font = options.font || "800 13px Microsoft YaHei, sans-serif";
+  ctx.save();
+  ctx.font = font;
+  const labelWidth = Math.min(ctx.measureText(label).width + 20, options.maxWidth || 220);
+  let width = Math.max(84, labelWidth);
+  const hasThumb = Boolean(photo);
+  const thumbW = hasThumb ? 58 : 0;
+  const thumbH = hasThumb ? 42 : 0;
+  if (hasThumb) width = Math.max(width, thumbW + 20);
+  if (people.length) width = Math.max(width, 168);
+  width = Math.min(width, options.maxWidth || 220);
+  const peopleHeight = people.length ? 28 + Math.ceil(people.length / 2) * 20 : 0;
+  const height = 24 + (hasThumb ? thumbH + 8 : 0) + peopleHeight;
+  const x = screen.x - width / 2;
+  const y = screen.y - height / 2;
+  const selected = Boolean(options.selected);
+  const nearby = Boolean(options.nearby);
+  ctx.fillStyle = selected ? "rgba(31, 85, 78, 0.94)" : nearby ? "rgba(255, 250, 240, 0.92)" : "rgba(255, 250, 240, 0.84)";
+  ctx.strokeStyle = selected ? "rgba(31, 85, 78, 0.38)" : "rgba(31, 85, 78, 0.18)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, 7);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = selected ? "#fffaf0" : "#1d2a24";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, screen.x, y + 13, width - 10);
+  let cursorY = y + 24;
+  if (hasThumb) {
+    const thumbX = screen.x - thumbW / 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(thumbX, cursorY + 4, thumbW, thumbH, 5);
+    ctx.clip();
+    ctx.fillStyle = "rgba(232, 225, 211, 0.9)";
+    ctx.fillRect(thumbX, cursorY + 4, thumbW, thumbH);
+    if (image) drawCoverImage(ctx, image, thumbX, cursorY + 4, thumbW, thumbH);
+    ctx.restore();
+    ctx.strokeStyle = selected ? "rgba(255, 250, 240, 0.45)" : "rgba(31, 85, 78, 0.16)";
+    ctx.beginPath();
+    ctx.roundRect(thumbX, cursorY + 4, thumbW, thumbH, 5);
+    ctx.stroke();
+    cursorY += thumbH + 10;
+  }
+  if (people.length) {
+    drawPeopleMarkerList(ctx, people, screen.x, cursorY + 4, {
+      maxWidth: width - 12,
+      compact: true,
+      selected
+    });
+  }
+  ctx.restore();
+}
+
+function drawPeopleMarkerList(ctx, entries, centerX, y, options = {}) {
+  const visibleEntries = (entries || []).slice(0, options.limit || 4);
+  if (!visibleEntries.length) return 0;
+  const lineHeight = options.compact ? 20 : 24;
+  const columns = visibleEntries.length > 2 ? 2 : 1;
+  const columnWidth = Math.min(92, Math.max(68, (options.maxWidth || 180) / columns));
+  const startX = centerX - (columns * columnWidth) / 2;
+  visibleEntries.forEach((entry, index) => {
+    const col = index % columns;
+    const row = Math.floor(index / columns);
+    const x = startX + col * columnWidth;
+    const rowY = y + row * lineHeight;
+    drawPersonMarker(ctx, entry.person, entry.room, x, rowY, {
+      width: columnWidth - 4,
+      selected: options.selected
+    });
+  });
+  const hiddenCount = Math.max(0, (entries || []).length - visibleEntries.length);
+  if (hiddenCount) {
+    ctx.save();
+    ctx.fillStyle = options.selected ? "rgba(255, 250, 240, 0.88)" : "rgba(31, 85, 78, 0.72)";
+    ctx.font = "800 10px Microsoft YaHei, sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`+${hiddenCount}`, centerX + (options.maxWidth || 180) / 2 - 8, y + Math.ceil(visibleEntries.length / columns) * lineHeight - 10);
+    ctx.restore();
+  }
+  return Math.ceil(visibleEntries.length / columns) * lineHeight;
+}
+
+function drawPersonMarker(ctx, person, room, x, y, options = {}) {
+  const avatarSize = options.avatarSize || 16;
+  const label = getPersonMarkerLabel(person, room);
+  const image = person?.photo ? getCachedPhotoImage(person.photo) : null;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x + avatarSize / 2, y + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+  ctx.fillStyle = "#f4d799";
+  ctx.fill();
+  if (image && isPhotoImageReady(image)) {
+    ctx.clip();
+    drawCoverImage(ctx, image, x, y, avatarSize, avatarSize);
+  }
+  ctx.restore();
+  ctx.save();
+  ctx.strokeStyle = options.selected ? "rgba(255, 250, 240, 0.72)" : "rgba(31, 85, 78, 0.34)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(x + avatarSize / 2, y + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+  ctx.stroke();
+  if (!image || !isPhotoImageReady(image)) {
+    ctx.fillStyle = "#1f554e";
+    ctx.font = "900 10px Microsoft YaHei, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText((person?.name || person?.type || "人").slice(0, 1), x + avatarSize / 2, y + avatarSize / 2 + 0.5);
+  }
+  ctx.fillStyle = options.selected ? "#fffaf0" : "#1d2a24";
+  ctx.font = "800 10px Microsoft YaHei, sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, x + avatarSize + 4, y + avatarSize / 2, Math.max(24, (options.width || 78) - avatarSize - 5));
+  ctx.restore();
 }
 
 function drawGameLabel(ctx, label, x, y, options = {}) {
@@ -6864,9 +7064,9 @@ function drawInteriorScene(ctx) {
   ctx.font = "800 18px Microsoft YaHei, sans-serif";
   ctx.fillText(getBuildingDisplayName(region, building), margin + 18, margin + 34);
   const rooms = building?.rooms || [];
-  const cols = Math.max(1, Math.min(3, Math.floor((state.canvasSize.width - margin * 2) / 180)));
-  const cardW = Math.max(132, (state.canvasSize.width - margin * 2 - 44 - (cols - 1) * 16) / cols);
-  const cardH = 92;
+  const cols = Math.max(1, Math.min(3, Math.floor((state.canvasSize.width - margin * 2) / 220)));
+  const cardW = Math.max(172, (state.canvasSize.width - margin * 2 - 44 - (cols - 1) * 16) / cols);
+  const cardH = 126;
   rooms.forEach((room, index) => {
     const col = index % cols;
     const row = Math.floor(index / cols);
@@ -6880,12 +7080,35 @@ function drawInteriorScene(ctx) {
     ctx.roundRect(x, y, cardW, cardH, 8);
     ctx.fill();
     ctx.stroke();
+    const photo = getFirstPhoto(room);
+    const photoImage = photo ? getCachedPhotoImage(photo) : null;
+    const thumbSize = 54;
+    const thumbX = x + 12;
+    const thumbY = y + 16;
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(thumbX, thumbY, thumbSize, thumbSize, 7);
+    ctx.clip();
+    ctx.fillStyle = "#f2eadc";
+    ctx.fillRect(thumbX, thumbY, thumbSize, thumbSize);
+    if (photoImage) drawCoverImage(ctx, photoImage, thumbX, thumbY, thumbSize, thumbSize);
+    ctx.restore();
+    ctx.strokeStyle = active ? "rgba(31, 85, 78, 0.32)" : "rgba(29, 42, 36, 0.16)";
+    ctx.beginPath();
+    ctx.roundRect(thumbX, thumbY, thumbSize, thumbSize, 7);
+    ctx.stroke();
     ctx.fillStyle = "#1d2a24";
     ctx.font = "800 14px Microsoft YaHei, sans-serif";
-    ctx.fillText(getRoomDisplayName(room), x + 12, y + 28, cardW - 24);
+    ctx.fillText(getRoomDisplayName(room), x + 78, y + 30, cardW - 90);
     ctx.fillStyle = "#667064";
     ctx.font = "700 12px Microsoft YaHei, sans-serif";
-    ctx.fillText(`${room.type || "场地"}  ${room.people.length} 人  ${room.photos.length} 图`, x + 12, y + 54, cardW - 24);
+    ctx.fillText(`${room.type || "场地"}  ${room.people.length} 人  ${room.photos.length} 图`, x + 78, y + 54, cardW - 90);
+    if (state.gameData.settings.showPeopleMarkers !== false && room.people.length) {
+      drawPeopleMarkerList(ctx, room.people.map((person) => ({ person, room })), x + cardW / 2, y + 82, {
+        maxWidth: cardW - 24,
+        limit: 4
+      });
+    }
   });
   ctx.restore();
 }
@@ -7687,6 +7910,7 @@ function normalizeGameData(source) {
   const settings = source.settings && typeof source.settings === "object" ? source.settings : {};
   base.settings.showPhotoMarkers = settings.showPhotoMarkers !== false;
   base.settings.showInteractionMarkers = settings.showInteractionMarkers !== false;
+  base.settings.showPeopleMarkers = settings.showPeopleMarkers !== false;
   const location = source.location && typeof source.location === "object" ? source.location : {};
   base.location = {
     kind: location.kind === "building" || location.kind === "room" ? location.kind : "campus",
@@ -8844,6 +9068,7 @@ function getGameTextState() {
     nearbyPhotoSpotId: state.currentNearbyPhotoSpotId || "",
     showPhotoMarkers: state.gameData.settings.showPhotoMarkers,
     showInteractionMarkers: state.gameData.settings.showInteractionMarkers,
+    showPeopleMarkers: state.gameData.settings.showPeopleMarkers,
     nearbyTargets: state.currentNearbyInteractionTargets.map((target) => target.key),
     nearbyBuildingIds: [...state.currentNearbyBuildingIds],
     selectedBuildingId: state.gameData.selectedBuildingId || "",
