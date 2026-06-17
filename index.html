@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>校园回忆录</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./src/styles.css?v=20260617d" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260617e" />
   </head>
   <body>
     <div class="app-shell">
@@ -15,9 +15,34 @@
           <div class="current-school" id="currentSchool">未选择学校</div>
         </div>
         <div class="topbar-actions">
+          <button class="secondary-button compact" id="gameInfoButton" type="button" aria-expanded="false">游戏信息</button>
           <button class="primary-button compact" id="editorToggleButton" type="button">进入地图编辑</button>
         </div>
       </header>
+
+      <section class="game-info-panel" id="gameInfoPanel" aria-label="游戏信息" hidden>
+        <div class="game-info-head">
+          <div class="game-info-tabs" role="tablist" aria-label="游戏信息分类">
+            <button class="game-info-tab active" type="button">作者</button>
+          </div>
+          <button class="secondary-button compact" id="gameInfoCloseButton" type="button">收起</button>
+        </div>
+        <div class="game-info-grid">
+          <article class="game-info-card author-card">
+            <p class="author-inline"><strong>作者</strong><a href="https://xhslink.com/m/A2DFslJF4mb" target="_blank" rel="noreferrer">落星峦</a></p>
+            <p class="author-inline"><a href="https://kw66.github.io/games/" target="_blank" rel="noreferrer">作者游戏合集</a></p>
+          </article>
+          <article class="game-info-card project-card">
+            <p><a href="https://github.com/kw66/campus-memoir" target="_blank" rel="noreferrer"><span>项目地址</span><em>（求个star⭐）</em></a></p>
+            <p><span>小红书交流帖</span><em>（求点赞❤️）</em></p>
+          </article>
+          <article class="game-info-card stats-card">
+            <h2>校园足迹</h2>
+            <div class="stats-panel" id="globalStatsPanel" aria-live="polite"></div>
+            <p class="stats-note" id="globalStatsStatus">正在读取校园足迹...</p>
+          </article>
+        </div>
+      </section>
 
       <main class="game-layout" aria-label="校园回忆录主界面">
         <section class="map-panel" aria-label="地图区域">
@@ -328,6 +353,6 @@
       </form>
     </dialog>
 
-    <script src="./src/app.js?v=20260617d"></script>
+    <script src="./src/app.js?v=20260617e"></script>
   </body>
 </html>

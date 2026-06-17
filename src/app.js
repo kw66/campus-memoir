@@ -1,6 +1,8 @@
 const STORAGE_KEY = "campus-memoir-schools-v2";
 const LEGACY_STORAGE_KEY = "campus-memoir-schools-v1";
 const CURRENT_SCHOOL_KEY = "campus-memoir-current-school-id";
+const STATS_VISITOR_KEY = "campus-memoir-stats-visitor";
+const STATS_LAST_UV_DATE_KEY = "campus-memoir-stats-last-uv-date";
 const DB_NAME = "campus-memoir-local-db";
 const DB_VERSION = 4;
 const MAP_IMAGE_STORE = "mapImages";
@@ -11,6 +13,7 @@ const GAME_DATA_STORE = "gameData";
 const STRUCTURE_BRUSH_SIZE = 24;
 const LINEAR_STRUCTURE_WIDTH = 12;
 const DEFAULT_PLAYER_RADIUS = 26;
+const PLAYER_COLLISION_RADIUS_FACTOR = 0.42;
 const DEFAULT_WALK_SPEED = 320;
 const WALK_SPEED_FACTOR = 0.75;
 const MOVE_SLIDE_SAMPLE_RADIUS = 8;
@@ -18,6 +21,14 @@ const MOVE_SLIDE_MIN_DISTANCE = 0.5;
 const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
 const PHOTO_SPOT_NAME_PREFIX = "拍照点";
+const STATS_COUNTER_RPC_URL = "https://ypefmpeekfucmarbbdov.supabase.co";
+const STATS_COUNTER_RPC_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlwZWZtcGVla2Z1Y21hcmJiZG92Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5NTA2NTYsImV4cCI6MjA4MTUyNjY1Nn0.XTOQNFuuwfu9nwDTnO9-NEqlzZnzdCVnEmYEJh0rXf8";
+const STATS_COUNTER_IDS = {
+  totalPv: "campus_memoir_pv_total",
+  totalUv: "campus_memoir_uv_total",
+  dailyPvPrefix: "campus_memoir_pv_day",
+  dailyUvPrefix: "campus_memoir_uv_day"
+};
 const STRUCTURE_DISPLAY_ORDER = {
   green: 10,
   field: 15,
@@ -134,7 +145,7 @@ const VENUE_TYPE_RULES = {
   超市: { personLabel: "老师/同学", itemLabel: "货物" }
 };
 
-const PERSON_TYPES = ["老师", "同学", "舍友", "同门", "导师", "朋友", "恋人", "店员", "自定义"];
+const PERSON_TYPES = ["老师", "同学", "舍友", "同门", "导师", "朋友", "恋人", "店员", "自己", "自定义"];
 const ITEM_TYPES = ["物品", "交通工具", "运动器材", "菜", "货物", "工位", "项目", "自定义"];
 const DORM_RELATION_TYPES = ["自己的", "朋友的", "恋人的", "同学的", "自定义"];
 
@@ -349,6 +360,8 @@ const state = {
   gameDirty: false,
   gamePanelKey: "",
   gameNotice: "",
+  globalStats: { totalPv: 0, todayPv: 0, totalUv: 0, todayUv: 0 },
+  globalStatsStatus: "正在读取校园足迹...",
   photoUrlCache: new Map(),
   photoImageCache: new Map(),
   movementKeys: new Set(),
@@ -441,6 +454,11 @@ const state = {
 const els = {
   schoolButton: document.querySelector("#schoolButton"),
   currentSchool: document.querySelector("#currentSchool"),
+  gameInfoButton: document.querySelector("#gameInfoButton"),
+  gameInfoPanel: document.querySelector("#gameInfoPanel"),
+  gameInfoCloseButton: document.querySelector("#gameInfoCloseButton"),
+  globalStatsPanel: document.querySelector("#globalStatsPanel"),
+  globalStatsStatus: document.querySelector("#globalStatsStatus"),
   editorToggleButton: document.querySelector("#editorToggleButton"),
   zoomReadout: document.querySelector("#zoomReadout"),
   schoolDialog: document.querySelector("#schoolDialog"),
@@ -559,6 +577,7 @@ async function init() {
   }
   state.selectedSchoolId = loadCurrentSchoolId(state.schools);
   await renderAll({ fit: true });
+  void initGlobalStats();
   window.render_game_to_text = renderToText;
   window.advanceTime = async (ms = 16) => {
     const steps = Math.max(1, Math.round(Number(ms || 16) / (1000 / 60)));
@@ -659,6 +678,14 @@ function decorateButtonIcon(button, iconName, label) {
 function bindEvents() {
   els.schoolButton.addEventListener("click", () => {
     openSchoolDialog();
+  });
+
+  els.gameInfoButton.addEventListener("click", () => {
+    toggleGameInfoPanel();
+  });
+
+  els.gameInfoCloseButton.addEventListener("click", () => {
+    toggleGameInfoPanel(false);
   });
 
   els.newSchoolChoiceButton.addEventListener("click", () => {
@@ -1966,10 +1993,13 @@ function initializeGameForCurrentMap(options = {}) {
   }
   player.x = clamp(player.x, 0, state.mapNaturalSize.width);
   player.y = clamp(player.y, 0, state.mapNaturalSize.height);
-  if (!canPlayerMoveTo(player)) {
-    const walkable = findNearbyWalkablePoint(player) || { x: state.mapNaturalSize.width / 2, y: state.mapNaturalSize.height / 2 };
+  if (!canPlayerMoveFreelyFrom(player)) {
+    const walkable = findNearbyWalkablePoint(player, { requireFreedom: true })
+      || findNearbyWalkablePoint(player)
+      || { x: state.mapNaturalSize.width / 2, y: state.mapNaturalSize.height / 2 };
     player.x = walkable.x;
     player.y = walkable.y;
+    markGameDirty();
   }
   updateNearbyGameContext();
 }
@@ -2204,9 +2234,13 @@ function handleGameKeyUp(event) {
 }
 
 function canPlayerMoveTo(point) {
-  if (!isPlayerCircleOnVisibleMap(point)) return false;
+  const touchesPriorityPath = isPlayerCircleTouchingPriorityPath(point);
+  if (touchesPriorityPath) {
+    if (!isPointOnVisibleMap(point)) return false;
+  } else if (!isPlayerCircleOnVisibleMap(point)) return false;
   const sample = samplePlayerCollisionAt(point);
-  return sample.walkable !== false;
+  if (sample.walkable !== false) return true;
+  return touchesPriorityPath;
 }
 
 function isPlayerCircleOnVisibleMap(point) {
@@ -2237,6 +2271,9 @@ function isPointOnVisibleMap(point) {
 
 function samplePlayerCollisionAt(point) {
   const sample = sampleStructureAt(point);
+  if (sample.priorityHit || isPlayerCircleTouchingPriorityPath(point)) {
+    return { ...sample, walkable: true, top: sample.priorityHit || sample.walkableHit || sample.top };
+  }
   if (sample.walkable === false) return sample;
   const blocker = findNearestBlockingStructure(point);
   if (!blocker) return sample;
@@ -2245,6 +2282,37 @@ function samplePlayerCollisionAt(point) {
     top: blocker.hit,
     hits: [blocker.hit, ...sample.hits]
   };
+}
+
+function isPriorityPathType(type) {
+  return type === "road" || type === "bridge";
+}
+
+function isPlayerCircleTouchingPriorityPath(point) {
+  return isPlayerCircleTouchingWalkableStructure(point, { priorityOnly: true });
+}
+
+function isPlayerCircleTouchingWalkableStructure(point, options = {}) {
+  const radius = getPlayerCollisionRadius(point);
+  const editData = getSelectedEditData();
+  const visibleObjects = getVisibleStructureObjectIds();
+  for (const region of editData.structureRegions || []) {
+    if (region.visible === false) continue;
+    const type = region.type || "custom";
+    const walkable = getStructureTypeWalkable(type, region.walkable);
+    if (!walkable) continue;
+    if (options.priorityOnly && !isPriorityPathType(type)) continue;
+    if (distanceToRegion(point, getRegionAreas(region), region) <= radius) return true;
+  }
+  for (const stroke of editData.judgementStrokes || []) {
+    const type = stroke.type || "custom";
+    const walkable = getStructureTypeWalkable(type, stroke.walkable);
+    if (!walkable) continue;
+    if (options.priorityOnly && !isPriorityPathType(type)) continue;
+    if (!stroke.objectId || !visibleObjects.has(stroke.objectId)) continue;
+    if (distanceToStroke(point, stroke) <= radius) return true;
+  }
+  return false;
 }
 
 function findBlockingNormal(point) {
@@ -2406,7 +2474,8 @@ function nearestPointOnSegment(point, start, end) {
 }
 
 function getPlayerCollisionRadius(point = state.gameData.player) {
-  return Math.max(1, Number(point?.radius || state.gameData.player.radius) || DEFAULT_PLAYER_RADIUS);
+  const visualRadius = Number(point?.radius || state.gameData.player.radius) || DEFAULT_PLAYER_RADIUS;
+  return Math.max(4, visualRadius * PLAYER_COLLISION_RADIUS_FACTOR);
 }
 
 function isTransparentMapPixel(point) {
@@ -2423,8 +2492,9 @@ function isTransparentMapPixel(point) {
   return ctx.getImageData(0, 0, 1, 1).data[3] < 16;
 }
 
-function findNearbyWalkablePoint(origin) {
-  if (canPlayerMoveTo(origin)) return { x: origin.x, y: origin.y };
+function findNearbyWalkablePoint(origin, options = {}) {
+  const accepts = options.requireFreedom ? canPlayerMoveFreelyFrom : canPlayerMoveTo;
+  if (accepts(origin)) return { x: origin.x, y: origin.y };
   const step = Math.max(20, state.gameData.player.radius || DEFAULT_PLAYER_RADIUS);
   const maxRadius = Math.max(state.mapNaturalSize.width, state.mapNaturalSize.height);
   for (let radius = step; radius <= maxRadius; radius += step) {
@@ -2435,10 +2505,31 @@ function findNearbyWalkablePoint(origin) {
         x: clamp(origin.x + Math.cos(angle) * radius, 0, state.mapNaturalSize.width),
         y: clamp(origin.y + Math.sin(angle) * radius, 0, state.mapNaturalSize.height)
       };
-      if (canPlayerMoveTo(point)) return point;
+      if (accepts(point)) return point;
     }
   }
   return null;
+}
+
+function canPlayerMoveFreelyFrom(point) {
+  if (!canPlayerMoveTo(point)) return false;
+  const testDistance = Math.max(18, getPlayerCollisionRadius(point) * 2.5);
+  const directions = [
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 0, y: -1 },
+    normalizeVector({ x: 1, y: 1 }),
+    normalizeVector({ x: -1, y: 1 }),
+    normalizeVector({ x: 1, y: -1 }),
+    normalizeVector({ x: -1, y: -1 })
+  ].filter(Boolean);
+  let open = 0;
+  for (const direction of directions) {
+    const target = clampMoveTarget(point, { x: direction.x * testDistance, y: direction.y * testDistance });
+    if (canPlayerMoveTo(target)) open += 1;
+  }
+  return open >= 3;
 }
 
 async function toggleFullscreen() {
@@ -2870,6 +2961,18 @@ function getPersonMarkerLabel(person, room = null) {
   return relation && name && name !== relation ? `${relation}${name}` : name || relation || "人物";
 }
 
+function isDormRoom(room) {
+  return room?.type === "寝室";
+}
+
+function isSelfPerson(person) {
+  return person?.type === "自己";
+}
+
+function getSelfPersonInRoom(room) {
+  return (room?.people || []).find(isSelfPerson) || null;
+}
+
 function getBuildingPeople(building) {
   const entries = [];
   for (const room of building?.rooms || []) {
@@ -3154,6 +3257,8 @@ function renderInteriorPanelHtml(building, room, item, person) {
   if (state.gameData.location.kind !== "building" || !building) return "";
   const rule = getBuildingRule(building);
   const venueRule = getVenueRule(room, building);
+  const dormSelected = isDormRoom(room);
+  const selectedIsSelf = isSelfPerson(person);
   const roomOptions = renderOptions(rule.roomTypes, "自定义");
   const roomTypeOptions = renderOptions(rule.roomTypes, room?.type || "自定义");
   const roomRelationOptions = renderOptions(DORM_RELATION_TYPES, room?.relation || "自己的");
@@ -3169,10 +3274,10 @@ function renderInteriorPanelHtml(building, room, item, person) {
     <button class="person-chip${item.id === state.gameData.selectedPersonId ? " active" : ""}" type="button" data-game-action="selectPerson" data-person-id="${escapeAttr(item.id)}">${escapeHtml(getPersonDisplayName(item))}</button>
   `).join("") || "";
   const roomPhotoUrl = getRepresentativePhotoUrl(room);
-  const dormPlayerPortraitHtml = room?.type === "寝室" ? `
+  const dormPlayerPortraitHtml = selectedIsSelf ? `
         <div class="player-portrait-card">
-          <span class="player-portrait-status">${state.gameData.player.portrait ? "形象已设置" : "形象未设置"}</span>
-          <button class="secondary-button" type="button" data-game-action="uploadPlayerPortrait">设形象</button>
+          <span class="player-portrait-status">${state.gameData.player.portrait ? "地图大头贴已设置" : "地图仍使用默认圆点"}</span>
+          <button class="secondary-button" type="button" data-game-action="uploadPlayerPortrait">设大头贴</button>
         </div>
   ` : "";
   const itemPhotoUrl = getRepresentativePhotoUrl(item);
@@ -3206,7 +3311,6 @@ function renderInteriorPanelHtml(building, room, item, person) {
           <button class="secondary-button danger" type="button" data-game-action="deleteRoomPhoto" ${!room || !room.photos.length ? "disabled" : ""}>删图</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteRoom">删场地</button>
         </div>
-        ${dormPlayerPortraitHtml}
         <div class="item-add-row">
           <input class="game-input" data-game-field="newItemName" type="text" placeholder="${escapeAttr(venueRule.itemLabel)}">
           <button class="secondary-button" type="button" data-game-action="addItem">加${escapeHtml(venueRule.itemLabel)}</button>
@@ -3234,6 +3338,7 @@ function renderInteriorPanelHtml(building, room, item, person) {
         <div class="person-add-row">
           <input class="game-input" data-game-field="newPersonName" type="text" placeholder="${escapeAttr(venueRule.personLabel)}">
           <button class="secondary-button" type="button" data-game-action="addPerson">加${escapeHtml(venueRule.personLabel)}</button>
+          ${dormSelected && !getSelfPersonInRoom(room) ? `<button class="secondary-button" type="button" data-game-action="addSelfPerson">加自己</button>` : ""}
         </div>
         <div class="person-chip-row">${people}</div>
         <div class="person-detail" ${person ? "" : "hidden"}>
@@ -3241,10 +3346,11 @@ function renderInteriorPanelHtml(building, room, item, person) {
             <div class="person-photo">${personPhotoUrl ? `<img src="${personPhotoUrl}" alt="">` : `<span>照片</span>`}</div>
             <div class="person-fields">
               <input class="game-input" data-game-field="personName" type="text" value="${escapeAttr(person?.name || "")}" placeholder="姓名">
-              <select class="game-input" data-game-field="personType">${personTypeOptions}</select>
+              <select class="game-input" data-game-field="personType" ${selectedIsSelf ? "disabled" : ""}>${personTypeOptions}</select>
               <textarea class="game-input" data-game-field="personDescription" placeholder="背景资料">${escapeHtml(person?.description || "")}</textarea>
             </div>
           </div>
+          ${dormPlayerPortraitHtml}
           <div class="game-actions dense">
             <button class="secondary-button" type="button" data-game-action="uploadPersonPhoto">人物图</button>
             <button class="secondary-button" type="button" data-game-action="savePerson">保存</button>
@@ -3366,8 +3472,8 @@ function handleGameAction(action, button) {
       els.roomPhotoInput.click();
       return;
     case "uploadPlayerPortrait":
-      if (getSelectedRoom()?.type !== "寝室") {
-        setGameNotice("请先进入寝室");
+      if (!isDormRoom(getSelectedRoom()) || !isSelfPerson(getSelectedPerson())) {
+        setGameNotice("请先在寝室里选择自己");
         return;
       }
       els.playerPortraitInput.click();
@@ -3413,6 +3519,9 @@ function handleGameAction(action, button) {
       return;
     case "addPerson":
       addPersonToSelectedRoom();
+      return;
+    case "addSelfPerson":
+      addSelfPersonToDorm();
       return;
     case "selectPerson":
       selectPerson(button.dataset.personId || "");
@@ -4104,6 +4213,32 @@ function addPersonToSelectedRoom() {
   renderGamePanel({ force: true });
 }
 
+function addSelfPersonToDorm() {
+  const room = getSelectedRoom();
+  if (!isDormRoom(room)) {
+    setGameNotice("只有寝室可以设置自己");
+    renderGamePanel({ force: true });
+    return;
+  }
+  const existing = getSelfPersonInRoom(room);
+  if (existing) {
+    state.gameData.selectedPersonId = existing.id;
+    renderGamePanel({ force: true });
+    return;
+  }
+  const person = normalizePerson({
+    id: createId("person"),
+    name: "自己",
+    type: "自己",
+    createdAt: new Date().toISOString()
+  });
+  room.people.push(person);
+  state.gameData.selectedPersonId = person.id;
+  room.updatedAt = new Date().toISOString();
+  markGameDirty();
+  renderGamePanel({ force: true });
+}
+
 function selectPerson(personId) {
   const room = getSelectedRoom();
   if (!room?.people.some((person) => person.id === personId)) return;
@@ -4125,14 +4260,18 @@ async function setSelectedPersonPhoto(file) {
 async function setPlayerPortraitFromDorm(file) {
   const building = getSelectedBuildingMemory();
   const room = getSelectedRoom();
-  if (!building || !room || room.type !== "寝室") {
-    setGameNotice("请先在寝室里配置");
+  const person = getSelectedPerson();
+  if (!building || !isDormRoom(room) || !isSelfPerson(person)) {
+    setGameNotice("请先在寝室里选择自己");
     return;
   }
   const record = await blobToResourceRecord(file, file.name || "portrait");
-  state.gameData.player.portrait = createPhotoFromResource(record);
+  const photo = createPhotoFromResource(record);
+  state.gameData.player.portrait = photo;
+  person.portrait = photo;
+  person.updatedAt = new Date().toISOString();
   markGameDirty();
-  setGameNotice("形象已更新");
+  setGameNotice("地图大头贴已更新");
   renderGamePanel({ force: true });
   queueDraw();
 }
@@ -4140,8 +4279,16 @@ async function setPlayerPortraitFromDorm(file) {
 function saveSelectedPerson(options = {}) {
   const person = getSelectedPerson();
   if (!person) return;
+  const room = getSelectedRoom();
   person.name = els.gamePanel.querySelector('[data-game-field="personName"]')?.value?.trim() || person.name;
-  person.type = els.gamePanel.querySelector('[data-game-field="personType"]')?.value || person.type || "同学";
+  const requestedType = els.gamePanel.querySelector('[data-game-field="personType"]')?.value || person.type || "同学";
+  if (isSelfPerson(person)) {
+    person.type = "自己";
+  } else if (requestedType === "自己") {
+    person.type = isDormRoom(room) && !getSelfPersonInRoom(room) ? "自己" : "同学";
+  } else {
+    person.type = requestedType;
+  }
   person.description = els.gamePanel.querySelector('[data-game-field="personDescription"]')?.value?.trim() || "";
   person.updatedAt = new Date().toISOString();
   markGameDirty(options.defer ? { defer: true } : {});
@@ -4163,10 +4310,13 @@ function deleteSelectedPerson() {
   const room = getSelectedRoom();
   const person = getSelectedPerson();
   if (!room || !person) return;
+  const wasSelf = isSelfPerson(person);
   room.people = room.people.filter((item) => item.id !== person.id);
+  if (wasSelf) state.gameData.player.portrait = null;
   state.gameData.selectedPersonId = room.people[0]?.id || "";
   markGameDirty();
   renderGamePanel({ force: true });
+  queueDraw();
 }
 
 function setGameNotice(text) {
@@ -4187,6 +4337,188 @@ function setEditorNotice(text, tone = "info") {
     renderEditorState();
   }, 2600);
   renderEditorState();
+}
+
+function toggleGameInfoPanel(forceOpen = null) {
+  const open = forceOpen === null ? els.gameInfoPanel.hidden : Boolean(forceOpen);
+  els.gameInfoPanel.hidden = !open;
+  els.gameInfoButton.setAttribute("aria-expanded", String(open));
+  if (open) void refreshStatsPanel();
+}
+
+async function initGlobalStats() {
+  renderGlobalStatsPanel();
+  try {
+    if (shouldRecordGlobalStats()) {
+      await recordGlobalVisit();
+      await refreshGlobalStats();
+      state.globalStatsStatus = "校园足迹已更新。";
+    } else {
+      state.globalStatsStatus = "本地预览只显示本机统计。";
+    }
+  } catch (error) {
+    console.warn("校园足迹初始化失败:", error);
+    state.globalStatsStatus = "全站统计暂时不可用，已显示本机统计。";
+  }
+  await refreshStatsPanel();
+}
+
+async function refreshStatsPanel() {
+  renderGlobalStatsPanel(await getLocalPlayerStats());
+}
+
+async function recordGlobalVisit() {
+  const today = getLocalDateKey();
+  await incrementStatsCounter(STATS_COUNTER_IDS.totalPv);
+  await incrementStatsCounter(makeDailyCounterId(STATS_COUNTER_IDS.dailyPvPrefix, today));
+  const isKnownVisitor = localStorage.getItem(STATS_VISITOR_KEY) === "true";
+  const lastUvDate = localStorage.getItem(STATS_LAST_UV_DATE_KEY);
+  if (!isKnownVisitor) {
+    await incrementStatsCounter(STATS_COUNTER_IDS.totalUv);
+    localStorage.setItem(STATS_VISITOR_KEY, "true");
+  }
+  if (lastUvDate !== today) {
+    await incrementStatsCounter(makeDailyCounterId(STATS_COUNTER_IDS.dailyUvPrefix, today));
+    localStorage.setItem(STATS_LAST_UV_DATE_KEY, today);
+  }
+}
+
+async function refreshGlobalStats() {
+  const today = getLocalDateKey();
+  const dailyPv = makeDailyCounterId(STATS_COUNTER_IDS.dailyPvPrefix, today);
+  const dailyUv = makeDailyCounterId(STATS_COUNTER_IDS.dailyUvPrefix, today);
+  const counters = await fetchStatsCounters([
+    STATS_COUNTER_IDS.totalPv,
+    STATS_COUNTER_IDS.totalUv,
+    dailyPv,
+    dailyUv
+  ]);
+  state.globalStats = {
+    totalPv: clampInt(counters[STATS_COUNTER_IDS.totalPv], 0, 99999999),
+    totalUv: clampInt(counters[STATS_COUNTER_IDS.totalUv], 0, 99999999),
+    todayPv: clampInt(counters[dailyPv], 0, 99999999),
+    todayUv: clampInt(counters[dailyUv], 0, 99999999)
+  };
+}
+
+async function getLocalPlayerStats() {
+  const stats = {
+    schoolCount: state.schools.length,
+    photoCount: 0,
+    peopleCount: 0,
+    buildingCount: 0,
+    venueCount: 0
+  };
+  for (const school of state.schools) {
+    const data = school.id === state.selectedSchoolId
+      ? state.gameData
+      : await getGameData(school.id).catch(() => createEmptyGameData());
+    stats.photoCount += (data.photoSpots || []).reduce((sum, spot) => sum + (spot.photos?.length || 0), 0);
+    stats.buildingCount += Object.keys(data.buildings || {}).length;
+    for (const building of Object.values(data.buildings || {})) {
+      stats.photoCount += (building.photos || []).length;
+      stats.venueCount += (building.rooms || []).length;
+      for (const room of building.rooms || []) {
+        stats.photoCount += (room.photos || []).length;
+        stats.peopleCount += (room.people || []).length;
+        for (const item of room.items || []) stats.photoCount += (item.photos || []).length;
+      }
+    }
+  }
+  return stats;
+}
+
+function renderGlobalStatsPanel(localStats = null) {
+  if (!els.globalStatsPanel) return;
+  const local = localStats || { schoolCount: 0, photoCount: 0, peopleCount: 0, buildingCount: 0, venueCount: 0 };
+  const stats = state.globalStats || {};
+  const groups = [
+    {
+      title: "全部玩家",
+      items: [
+        ["访问", stats.totalPv || 0, stats.todayPv || 0],
+        ["访客", stats.totalUv || 0, stats.todayUv || 0]
+      ]
+    },
+    {
+      title: "我的回忆",
+      items: [
+        ["校区", local.schoolCount, ""],
+        ["拍照", local.photoCount, ""],
+        ["人物", local.peopleCount, ""],
+        ["建筑", local.buildingCount + local.venueCount, ""]
+      ]
+    }
+  ];
+  els.globalStatsPanel.innerHTML = groups.map((group) => `
+    <section class="stat-group" aria-label="${escapeAttr(group.title)}统计">
+      <h3>${escapeHtml(group.title)}</h3>
+      <div class="stat-grid">
+        ${group.items.map(([label, total, today]) => `
+          <div class="stat-card">
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(formatCompactCount(total))}</strong>
+            ${today === "" ? "" : `<em>今日 ${escapeHtml(formatCompactCount(today))}</em>`}
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `).join("");
+  if (els.globalStatsStatus) els.globalStatsStatus.textContent = state.globalStatsStatus || "";
+}
+
+function shouldRecordGlobalStats() {
+  const hostname = window.location.hostname;
+  if (!hostname || hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return false;
+  return window.location.protocol === "https:" || window.location.protocol === "http:";
+}
+
+async function incrementStatsCounter(counterId) {
+  return postStatsRpc("increment_counter", { counter_id: counterId });
+}
+
+async function fetchStatsCounters(counterIds) {
+  const rows = await postStatsRpc("get_counters", { counter_ids: counterIds });
+  const result = Object.create(null);
+  for (const id of counterIds) result[id] = 0;
+  if (Array.isArray(rows)) {
+    for (const row of rows) {
+      if (row?.id) result[row.id] = clampInt(row.count, 0, 99999999);
+    }
+  }
+  return result;
+}
+
+async function postStatsRpc(endpoint, payload) {
+  const response = await fetch(`${STATS_COUNTER_RPC_URL}/rest/v1/rpc/${endpoint}`, {
+    method: "POST",
+    headers: {
+      apikey: STATS_COUNTER_RPC_ANON_KEY,
+      Authorization: `Bearer ${STATS_COUNTER_RPC_ANON_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw new Error(`统计接口 ${endpoint} 返回 ${response.status}`);
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
+}
+
+function makeDailyCounterId(prefix, dateKey = getLocalDateKey()) {
+  return `${prefix}_${dateKey.replaceAll("-", "")}`;
+}
+
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatCompactCount(value) {
+  const count = clampInt(value, 0, 99999999);
+  if (count >= 100000) return `${(count / 10000).toFixed(1)}万`;
+  return String(count);
 }
 
 function wrapIndex(index, length) {
@@ -5277,9 +5609,9 @@ function selectInteriorRoomAtScreen(pointer) {
   const building = getSelectedBuildingMemory();
   if (!building?.rooms?.length || !pointer) return;
   const margin = 28;
-  const cols = Math.max(1, Math.min(3, Math.floor((state.canvasSize.width - margin * 2) / 180)));
-  const cardW = Math.max(132, (state.canvasSize.width - margin * 2 - 44 - (cols - 1) * 16) / cols);
-  const cardH = 92;
+  const cols = Math.max(1, Math.min(3, Math.floor((state.canvasSize.width - margin * 2) / 220)));
+  const cardW = Math.max(172, (state.canvasSize.width - margin * 2 - 44 - (cols - 1) * 16) / cols);
+  const cardH = 126;
   const x = pointer.startX;
   const y = pointer.startY;
   for (let index = 0; index < building.rooms.length; index++) {
@@ -6109,10 +6441,15 @@ function sampleStructureAt(point, options = {}) {
       walkRank: getStructureWalkRank(stroke.type)
     });
   }
-  const top = hits.sort((a, b) => b.walkRank - a.walkRank || b.displayRank - a.displayRank)[0] || null;
+  hits.sort((a, b) => b.walkRank - a.walkRank || b.displayRank - a.displayRank);
+  const top = hits[0] || null;
+  const walkableHit = hits.find((hit) => hit.walkable) || null;
+  const priorityHit = hits.find((hit) => hit.walkable && isPriorityPathType(hit.type)) || null;
   return {
     walkable: top ? top.walkable : true,
     top,
+    walkableHit,
+    priorityHit,
     hits
   };
 }
@@ -6126,6 +6463,18 @@ function isPointInStroke(point, stroke) {
     if (distanceToSegment(point, points[index - 1], points[index]) <= radius) return true;
   }
   return false;
+}
+
+function distanceToStroke(point, stroke) {
+  const points = stroke?.points || [];
+  if (!points.length) return Infinity;
+  const radius = Math.max(0.5, (Number(stroke.size) || STRUCTURE_BRUSH_SIZE) / 2);
+  if (points.length === 1) return Math.max(0, distance(point, points[0]) - radius);
+  let best = Infinity;
+  for (let index = 1; index < points.length; index++) {
+    best = Math.min(best, distanceToSegment(point, points[index - 1], points[index]));
+  }
+  return Math.max(0, best - radius);
 }
 
 function distanceToSegment(point, start, end) {
@@ -7015,6 +7364,8 @@ function drawPlayer(ctx) {
   const player = state.gameData.player;
   const screen = imageToScreen(player);
   const radius = Math.max(10, (player.radius || DEFAULT_PLAYER_RADIUS) * state.view.scale);
+  const coreRadius = Math.max(5, radius * PLAYER_COLLISION_RADIUS_FACTOR);
+  const portraitImage = player.portrait ? getCachedPhotoImage(player.portrait) : null;
   ctx.save();
   ctx.beginPath();
   ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
@@ -7023,10 +7374,23 @@ function drawPlayer(ctx) {
   ctx.strokeStyle = "#1f554e";
   ctx.lineWidth = Math.max(2, 2.5 * state.view.scale);
   ctx.stroke();
-  ctx.fillStyle = "#8dbf59";
   ctx.beginPath();
-  ctx.arc(screen.x, screen.y, radius * 0.42, 0, Math.PI * 2);
+  ctx.arc(screen.x, screen.y, coreRadius, 0, Math.PI * 2);
+  ctx.fillStyle = "#8dbf59";
   ctx.fill();
+  if (portraitImage && isPhotoImageReady(portraitImage)) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, coreRadius, 0, Math.PI * 2);
+    ctx.clip();
+    drawCoverImage(ctx, portraitImage, screen.x - coreRadius, screen.y - coreRadius, coreRadius * 2, coreRadius * 2);
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, coreRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = "#fffaf0";
+    ctx.lineWidth = Math.max(1.5, 1.5 * state.view.scale);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -7932,7 +8296,21 @@ function normalizeGameData(source) {
     if (normalized) base.buildings[id] = normalized;
   }
   migrateLegacyEntrancesToPhotoSpots(base);
+  syncPlayerPortraitFromSelfPerson(base);
   return base;
+}
+
+function syncPlayerPortraitFromSelfPerson(gameData) {
+  for (const building of Object.values(gameData.buildings || {})) {
+    for (const room of building.rooms || []) {
+      if (!isDormRoom(room)) continue;
+      const self = getSelfPersonInRoom(room);
+      if (self?.portrait) {
+        gameData.player.portrait = self.portrait;
+        return;
+      }
+    }
+  }
 }
 
 function normalizePhotoSpot(source) {
@@ -8084,6 +8462,7 @@ function normalizePerson(source) {
     type: typeof source.type === "string" ? source.type : "同学",
     description: typeof source.description === "string" ? source.description : "",
     photo: normalizePhotoRecord(source.photo) || null,
+    portrait: normalizePhotoRecord(source.portrait) || null,
     chat: Array.isArray(source.chat) ? source.chat.map(normalizeChatMessage).filter(Boolean) : [],
     createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString(),
     updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : new Date().toISOString()
@@ -9112,6 +9491,12 @@ function getGameTextState() {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function clampInt(value, min, max) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return min;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function distance(a, b) {
