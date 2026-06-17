@@ -23,7 +23,13 @@ const MOVE_SLIDE_MIN_DISTANCE = 0.5;
 const MOVE_TARGET_STOP_DISTANCE = 6;
 const MOVE_TARGET_SEARCH_RADIUS = 120;
 const MOVE_TARGET_START_SAMPLE_DISTANCE = 18;
-const MOVE_TARGET_MAX_FAILED_FRAMES = 10;
+const MOVE_TARGET_PROGRESS_EPSILON = 0.75;
+const MOVE_TARGET_STUCK_DRIFT_DISTANCE = 6;
+const MOVE_TARGET_REPATH_SECONDS = 0.35;
+const MOVE_TARGET_STUCK_SECONDS = 2.4;
+const MOVE_TARGET_PATH_COOLDOWN_SECONDS = 0.55;
+const MOVE_TARGET_WAYPOINT_DISTANCE = 10;
+const MOVE_TARGET_PATH_MAX_NODES = 18000;
 const GAME_CLICK_MOVE_TOLERANCE = 14;
 const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
@@ -417,7 +423,14 @@ const state = {
   photoImageCache: new Map(),
   movementKeys: new Set(),
   moveTarget: null,
-  moveTargetFailedFrames: 0,
+  moveTargetPath: [],
+  moveTargetPathIndex: 0,
+  moveTargetBestDistance: Infinity,
+  moveTargetBestWaypointDistance: Infinity,
+  moveTargetStuckSeconds: 0,
+  moveTargetStuckOrigin: null,
+  moveTargetRepathSeconds: 0,
+  moveTargetPathCooldownSeconds: 0,
   lastGameFrameTime: 0,
   gameLoopRunning: false,
   gameSaveTimer: null,
@@ -2408,6 +2421,77 @@ function startGameLoop() {
   requestAnimationFrame(gameLoop);
 }
 
+function clearMoveTarget() {
+  state.moveTarget = null;
+  state.moveTargetPath = [];
+  state.moveTargetPathIndex = 0;
+  state.moveTargetBestDistance = Infinity;
+  state.moveTargetBestWaypointDistance = Infinity;
+  state.moveTargetStuckSeconds = 0;
+  state.moveTargetStuckOrigin = null;
+  state.moveTargetRepathSeconds = 0;
+  state.moveTargetPathCooldownSeconds = 0;
+}
+
+function setMoveTarget(target) {
+  if (!target) {
+    clearMoveTarget();
+    return;
+  }
+  state.moveTarget = target;
+  state.moveTargetPath = [];
+  state.moveTargetPathIndex = 0;
+  state.moveTargetBestDistance = distance(state.gameData.player, target);
+  state.moveTargetBestWaypointDistance = state.moveTargetBestDistance;
+  state.moveTargetStuckSeconds = 0;
+  state.moveTargetStuckOrigin = { x: state.gameData.player.x, y: state.gameData.player.y };
+  state.moveTargetRepathSeconds = 0;
+  state.moveTargetPathCooldownSeconds = 0;
+}
+
+function resetMoveTargetStuckWatch(point = state.gameData.player) {
+  state.moveTargetStuckSeconds = 0;
+  state.moveTargetStuckOrigin = { x: point.x, y: point.y };
+}
+
+function updateMoveTargetStuckWatch(dt) {
+  if (!state.moveTarget) return;
+  if (!state.moveTargetStuckOrigin) {
+    resetMoveTargetStuckWatch();
+    return;
+  }
+  if (distance(state.gameData.player, state.moveTargetStuckOrigin) > MOVE_TARGET_STUCK_DRIFT_DISTANCE) {
+    resetMoveTargetStuckWatch();
+    return;
+  }
+  state.moveTargetStuckSeconds += dt;
+}
+
+function updateMoveTargetProgress(dt, previousPoint) {
+  if (!state.moveTarget) return;
+  const activeTarget = getActiveMoveTargetPoint();
+  const currentDistance = distance(state.gameData.player, state.moveTarget);
+  const waypointDistance = distance(state.gameData.player, activeTarget);
+  if (!Number.isFinite(state.moveTargetBestDistance)) {
+    state.moveTargetBestDistance = currentDistance;
+    state.moveTargetBestWaypointDistance = waypointDistance;
+    state.moveTargetStuckSeconds = 0;
+    return;
+  }
+  const previousDistance = previousPoint ? distance(previousPoint, activeTarget) : Infinity;
+  const isProgressing = waypointDistance < previousDistance - MOVE_TARGET_PROGRESS_EPSILON
+    || waypointDistance < state.moveTargetBestWaypointDistance - MOVE_TARGET_PROGRESS_EPSILON
+    || currentDistance < state.moveTargetBestDistance - MOVE_TARGET_PROGRESS_EPSILON;
+  state.moveTargetBestDistance = Math.min(state.moveTargetBestDistance, currentDistance);
+  state.moveTargetBestWaypointDistance = Math.min(state.moveTargetBestWaypointDistance, waypointDistance);
+  if (isProgressing) {
+    resetMoveTargetStuckWatch();
+    state.moveTargetRepathSeconds = 0;
+  } else {
+    state.moveTargetRepathSeconds += dt;
+  }
+}
+
 function gameLoop(now) {
   state.gameLoopRunning = false;
   const dt = Math.min(0.05, Math.max(0, (now - (state.lastGameFrameTime || now)) / 1000));
@@ -2422,43 +2506,56 @@ function gameLoop(now) {
 }
 
 function updateGameMovement(dt) {
+  const autoMove = state.moveTarget && !state.movementKeys.size;
+  if (autoMove) {
+    state.moveTargetPathCooldownSeconds = Math.max(0, state.moveTargetPathCooldownSeconds - dt);
+    advanceMoveTargetWaypoint();
+  }
   if (state.moveTarget && !state.movementKeys.size && distance(state.gameData.player, state.moveTarget) <= MOVE_TARGET_STOP_DISTANCE) {
-    state.moveTarget = null;
-    state.moveTargetFailedFrames = 0;
+    clearMoveTarget();
   }
   const vector = getMovementVector();
   if (!vector.x && !vector.y) return false;
   const player = state.gameData.player;
+  const previousPoint = { x: player.x, y: player.y };
   const speed = (Number(player.walkSpeed) || DEFAULT_WALK_SPEED) * WALK_SPEED_FACTOR;
-  const next = resolvePlayerMove(player, vector, speed * dt);
+  let next = resolvePlayerMove(player, vector, speed * dt);
+  if (!next && state.moveTarget && !state.movementKeys.size) {
+    next = resolveMoveTargetRecovery(player, vector, speed * dt);
+  }
+  if (next && distance(player, next) < MOVE_SLIDE_MIN_DISTANCE) next = null;
   if (!next) {
     if (state.moveTarget && !state.movementKeys.size) {
-      const adjustedTarget = findStartableMoveTarget(state.moveTarget, player);
-      if (adjustedTarget && distance(adjustedTarget, state.moveTarget) > 0.5) {
-        state.moveTarget = adjustedTarget;
-        state.moveTargetFailedFrames = 0;
+      updateMoveTargetStuckWatch(dt);
+      state.moveTargetRepathSeconds += dt;
+      if (state.moveTargetRepathSeconds >= MOVE_TARGET_REPATH_SECONDS && tryBuildMoveTargetPath(player)) {
         startGameLoop();
         queueDraw();
         return false;
       }
-      state.moveTargetFailedFrames += 1;
-      if (state.moveTargetFailedFrames <= MOVE_TARGET_MAX_FAILED_FRAMES) {
+      if (state.moveTargetStuckSeconds >= MOVE_TARGET_STUCK_SECONDS) {
+        clearMoveTarget();
+      } else {
         startGameLoop();
-        return false;
       }
-      state.moveTarget = null;
-      state.moveTargetFailedFrames = 0;
       queueDraw();
     }
     return false;
   }
   markMapInteraction(90);
-  state.moveTargetFailedFrames = 0;
   player.x = next.x;
   player.y = next.y;
   if (state.moveTarget && !state.movementKeys.size && distance(player, state.moveTarget) <= MOVE_TARGET_STOP_DISTANCE) {
-    state.moveTarget = null;
-    state.moveTargetFailedFrames = 0;
+    clearMoveTarget();
+  } else if (state.moveTarget && !state.movementKeys.size) {
+    updateMoveTargetStuckWatch(dt);
+    updateMoveTargetProgress(dt, previousPoint);
+    if (state.moveTarget && state.moveTargetRepathSeconds >= MOVE_TARGET_REPATH_SECONDS) {
+      tryBuildMoveTargetPath(player);
+    }
+    if (state.moveTarget && state.moveTargetStuckSeconds >= MOVE_TARGET_STUCK_SECONDS) {
+      clearMoveTarget();
+    }
   }
   updateNearbyGameContext();
   followPlayer();
@@ -2479,6 +2576,229 @@ function resolvePlayerMove(origin, direction, distanceValue) {
   const projected = getProjectedSlideMove(origin, direction, distanceValue, direct);
   if (projected) return projected;
   return getFallbackSlideMove(origin, fullDelta);
+}
+
+function resolveMoveTargetRecovery(origin, direction, distanceValue) {
+  if (!distanceValue || (!direction.x && !direction.y)) return null;
+  const probeDistance = Math.max(distanceValue, MOVE_SLIDE_MIN_DISTANCE * 4);
+  const angles = [
+    Math.PI / 10,
+    -Math.PI / 10,
+    Math.PI / 6,
+    -Math.PI / 6,
+    Math.PI / 4,
+    -Math.PI / 4,
+    Math.PI / 2,
+    -Math.PI / 2,
+    (Math.PI * 2) / 3,
+    -(Math.PI * 2) / 3,
+    (Math.PI * 3) / 4,
+    -(Math.PI * 3) / 4
+  ];
+  const baseAngle = Math.atan2(direction.y, direction.x);
+  let best = null;
+  let bestScore = -Infinity;
+  for (const offset of angles) {
+    const candidateDirection = {
+      x: Math.cos(baseAngle + offset),
+      y: Math.sin(baseAngle + offset)
+    };
+    const move = findFarthestWalkableMove(origin, {
+      x: candidateDirection.x * probeDistance,
+      y: candidateDirection.y * probeDistance
+    });
+    if (!move) continue;
+    const moved = distance(origin, move);
+    const progress = candidateDirection.x * direction.x + candidateDirection.y * direction.y;
+    const score = progress * 4 + moved;
+    if (score > bestScore) {
+      best = move;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function getActiveMoveTargetPoint() {
+  if (state.moveTargetPath?.length && state.moveTargetPathIndex < state.moveTargetPath.length) {
+    return state.moveTargetPath[state.moveTargetPathIndex];
+  }
+  return state.moveTarget || state.gameData.player;
+}
+
+function advanceMoveTargetWaypoint() {
+  if (!state.moveTargetPath?.length) return;
+  const player = state.gameData.player;
+  while (state.moveTargetPathIndex < state.moveTargetPath.length) {
+    const waypoint = state.moveTargetPath[state.moveTargetPathIndex];
+    if (distance(player, waypoint) > MOVE_TARGET_WAYPOINT_DISTANCE) break;
+    state.moveTargetPathIndex += 1;
+    state.moveTargetBestWaypointDistance = Infinity;
+  }
+  if (state.moveTargetPathIndex >= state.moveTargetPath.length) {
+    state.moveTargetPath = [];
+    state.moveTargetPathIndex = 0;
+    state.moveTargetBestWaypointDistance = Number.isFinite(state.moveTargetBestDistance)
+      ? state.moveTargetBestDistance
+      : distance(player, state.moveTarget || player);
+  }
+}
+
+function tryBuildMoveTargetPath(origin = state.gameData.player) {
+  if (!state.moveTarget || state.moveTargetPathCooldownSeconds > 0) return false;
+  state.moveTargetPathCooldownSeconds = MOVE_TARGET_PATH_COOLDOWN_SECONDS;
+  const path = buildMoveTargetPath(origin, state.moveTarget);
+  if (!path?.length) {
+    state.moveTargetRepathSeconds = 0;
+    return false;
+  }
+  const firstUsableIndex = path.findIndex((point) => distance(origin, point) > MOVE_TARGET_WAYPOINT_DISTANCE);
+  const usablePath = firstUsableIndex >= 0 ? path.slice(firstUsableIndex) : [];
+  if (!usablePath.length || !hasClearMoveSegment(origin, usablePath[0])) {
+    state.moveTargetRepathSeconds = 0;
+    return false;
+  }
+  state.moveTargetPath = usablePath;
+  state.moveTargetPathIndex = 0;
+  state.moveTargetBestWaypointDistance = distance(origin, getActiveMoveTargetPoint());
+  state.moveTargetRepathSeconds = 0;
+  return true;
+}
+
+function buildMoveTargetPath(origin, target) {
+  if (!origin || !target || !state.mapNaturalSize.width || !state.mapNaturalSize.height) return null;
+  if (!canPlayerMoveTo(origin) || !canPlayerMoveTo(target)) return null;
+  const radius = Math.max(8, getPlayerCollisionRadius(origin));
+  const routeDistance = distance(origin, target);
+  const margin = clamp(Math.max(radius * 8, routeDistance * 0.35), 180, 720);
+  const bounds = {
+    left: clamp(Math.min(origin.x, target.x) - margin, 0, state.mapNaturalSize.width),
+    top: clamp(Math.min(origin.y, target.y) - margin, 0, state.mapNaturalSize.height),
+    right: clamp(Math.max(origin.x, target.x) + margin, 0, state.mapNaturalSize.width),
+    bottom: clamp(Math.max(origin.y, target.y) + margin, 0, state.mapNaturalSize.height)
+  };
+  let cellSize = clamp(radius * 1.35, 18, 44);
+  let cols = Math.max(1, Math.ceil((bounds.right - bounds.left) / cellSize));
+  let rows = Math.max(1, Math.ceil((bounds.bottom - bounds.top) / cellSize));
+  if (cols * rows > MOVE_TARGET_PATH_MAX_NODES) {
+    cellSize = Math.min(96, Math.ceil(Math.sqrt(((bounds.right - bounds.left) * (bounds.bottom - bounds.top)) / MOVE_TARGET_PATH_MAX_NODES)));
+    cols = Math.max(1, Math.ceil((bounds.right - bounds.left) / cellSize));
+    rows = Math.max(1, Math.ceil((bounds.bottom - bounds.top) / cellSize));
+  }
+  if (cols * rows > MOVE_TARGET_PATH_MAX_NODES) return null;
+  const toCell = (point) => ({
+    col: clamp(Math.floor((point.x - bounds.left) / cellSize), 0, cols - 1),
+    row: clamp(Math.floor((point.y - bounds.top) / cellSize), 0, rows - 1)
+  });
+  const toKey = (cell) => `${cell.col},${cell.row}`;
+  const cellCenter = (cell) => clampImagePoint({
+    x: Math.min(bounds.right, bounds.left + (cell.col + 0.5) * cellSize),
+    y: Math.min(bounds.bottom, bounds.top + (cell.row + 0.5) * cellSize)
+  });
+  const start = toCell(origin);
+  const goal = toCell(target);
+  const startKey = toKey(start);
+  const goalKey = toKey(goal);
+  if (startKey === goalKey) return [target];
+  const walkableCache = new Map();
+  const isCellWalkable = (cell) => {
+    if (cell.col < 0 || cell.row < 0 || cell.col >= cols || cell.row >= rows) return false;
+    const key = toKey(cell);
+    if (key === startKey || key === goalKey) return true;
+    if (walkableCache.has(key)) return walkableCache.get(key);
+    const value = canPlayerMoveTo(cellCenter(cell));
+    walkableCache.set(key, value);
+    return value;
+  };
+  if (!isCellWalkable(start) || !isCellWalkable(goal)) return null;
+  const queue = [start];
+  const cameFrom = new Map([[startKey, ""]]);
+  let head = 0;
+  let foundKey = "";
+  while (head < queue.length) {
+    const current = queue[head++];
+    const currentKey = toKey(current);
+    if (currentKey === goalKey) {
+      foundKey = currentKey;
+      break;
+    }
+    const neighbors = [
+      { col: current.col + 1, row: current.row },
+      { col: current.col - 1, row: current.row },
+      { col: current.col, row: current.row + 1 },
+      { col: current.col, row: current.row - 1 },
+      { col: current.col + 1, row: current.row + 1 },
+      { col: current.col - 1, row: current.row + 1 },
+      { col: current.col + 1, row: current.row - 1 },
+      { col: current.col - 1, row: current.row - 1 }
+    ].sort((a, b) => distance(cellCenter(a), target) - distance(cellCenter(b), target));
+    for (const neighbor of neighbors) {
+      const key = toKey(neighbor);
+      if (cameFrom.has(key) || !isCellWalkable(neighbor)) continue;
+      if (neighbor.col !== current.col && neighbor.row !== current.row) {
+        if (!isCellWalkable({ col: neighbor.col, row: current.row }) || !isCellWalkable({ col: current.col, row: neighbor.row })) continue;
+      }
+      cameFrom.set(key, currentKey);
+      queue.push(neighbor);
+      if (key === goalKey) {
+        foundKey = key;
+        head = queue.length;
+        break;
+      }
+    }
+  }
+  if (!foundKey) return null;
+  const cells = [];
+  let key = foundKey;
+  while (key && key !== startKey) {
+    const [col, row] = key.split(",").map(Number);
+    cells.push({ col, row });
+    key = cameFrom.get(key);
+  }
+  cells.reverse();
+  const points = simplifyMovePath(cells.map(cellCenter), origin);
+  if (!points.length || distance(points[points.length - 1], target) > MOVE_TARGET_STOP_DISTANCE) {
+    points.push(target);
+  } else {
+    points[points.length - 1] = target;
+  }
+  return points;
+}
+
+function simplifyMovePath(points, origin) {
+  const simplified = [];
+  let anchor = origin;
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index];
+    if (hasClearMoveSegment(anchor, point)) continue;
+    const previous = points[Math.max(0, index - 1)];
+    if (!simplified.length || distance(simplified[simplified.length - 1], previous) > 1) {
+      simplified.push(previous);
+    }
+    anchor = previous;
+  }
+  if (points.length) {
+    const last = points[points.length - 1];
+    if (!simplified.length || distance(simplified[simplified.length - 1], last) > 1) {
+      simplified.push(last);
+    }
+  }
+  return simplified;
+}
+
+function hasClearMoveSegment(from, to) {
+  const length = distance(from, to);
+  if (length <= MOVE_TARGET_STOP_DISTANCE) return true;
+  const steps = Math.max(1, Math.ceil(length / Math.max(8, getPlayerCollisionRadius(from) * 0.45)));
+  for (let index = 1; index <= steps; index++) {
+    const t = index / steps;
+    const point = {
+      x: from.x + (to.x - from.x) * t,
+      y: from.y + (to.y - from.y) * t
+    };
+    if (!canPlayerMoveTo(point)) return false;
+  }
+  return true;
 }
 
 function clampMoveTarget(origin, delta) {
@@ -2621,8 +2941,9 @@ function getMovementVector() {
   if (state.movementKeys.has("ArrowDown") || state.movementKeys.has("KeyS")) y += 1;
   if (!x && !y && state.moveTarget) {
     const player = state.gameData.player;
-    x = state.moveTarget.x - player.x;
-    y = state.moveTarget.y - player.y;
+    const target = getActiveMoveTargetPoint();
+    x = target.x - player.x;
+    y = target.y - player.y;
   }
   const length = Math.hypot(x, y);
   return length > 0 ? { x: x / length, y: y / length } : { x: 0, y: 0 };
@@ -2633,8 +2954,7 @@ function handleGameKeyDown(event) {
   const code = event.code;
   if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "KeyA", "KeyD", "KeyW", "KeyS"].includes(code)) return false;
   event.preventDefault();
-  state.moveTarget = null;
-  state.moveTargetFailedFrames = 0;
+  clearMoveTarget();
   state.movementKeys.add(code);
   startGameLoop();
   return true;
@@ -3057,7 +3377,7 @@ async function saveCurrentGameData() {
 
 function updateNearbyGameContext() {
   if (state.gameData.location.kind === "building") {
-    state.moveTarget = null;
+    clearMoveTarget();
     const buildingId = state.gameData.location.buildingId || state.gameData.selectedBuildingId || "";
     state.currentNearbyInteractionTargets = [];
     state.currentNearbyPhotoSpotId = "";
@@ -6452,8 +6772,7 @@ function handleGameCanvasClick(imagePoint) {
   const clickedSpot = getNearbyPhotoSpotTarget(imagePoint);
   const nearbySpot = clickedSpot && state.currentNearbyInteractionTargets.find((target) => target.key === clickedSpot.key);
   if (nearbySpot) {
-    state.moveTarget = null;
-    state.moveTargetFailedFrames = 0;
+    clearMoveTarget();
     state.selectedNearbyInteractionKey = clickedSpot.key;
     state.defaultPhotoSpotInteractionKey = clickedSpot.key;
     state.gameData.selectedPhotoSpotId = clickedSpot.id;
@@ -6469,8 +6788,7 @@ function handleGameCanvasClick(imagePoint) {
     ? state.currentNearbyInteractionTargets.find((item) => item.key === clickedStructure.key)
     : null;
   if (target) {
-    state.moveTarget = null;
-    state.moveTargetFailedFrames = 0;
+    clearMoveTarget();
     state.selectedNearbyInteractionKey = target.key;
     state.gameData.selectedBuildingId = target.id;
     state.selectedSpotPhotoForEditId = "";
@@ -6487,13 +6805,11 @@ function handleGameCanvasClick(imagePoint) {
 function setMoveTargetFromClick(imagePoint) {
   const target = findMoveTargetNear(imagePoint);
   if (!target) {
-    state.moveTarget = null;
-    state.moveTargetFailedFrames = 0;
+    clearMoveTarget();
     queueDraw();
     return;
   }
-  state.moveTarget = target;
-  state.moveTargetFailedFrames = 0;
+  setMoveTarget(target);
   state.movementKeys.clear();
   updateNearbyGameContext();
   renderGamePanel();
