@@ -1585,6 +1585,19 @@ textarea.game-input {
   font-size: 12px;
 }
 
+.download-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.download-actions .secondary-button {
+  min-height: 34px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -1763,6 +1776,14 @@ textarea.game-input {
   .download-item {
     grid-template-columns: 1fr;
     align-items: stretch;
+  }
+
+  .download-actions {
+    justify-content: stretch;
+  }
+
+  .download-actions .secondary-button {
+    flex: 1 1 0;
   }
 
   .form-footer {

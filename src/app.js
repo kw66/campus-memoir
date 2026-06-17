@@ -320,12 +320,32 @@ const ICON_SHORT_LABELS = {
 
 const OFFICIAL_CATALOG = [
   {
-    id: "ustc-gaoxin-demo",
-    name: "中国科学技术大学高新校区",
-    version: "占位",
-    description: "官方文件列表接口预留，后续可接 GitHub Release 或 raw 文件。",
-    manifestUrl: "",
-    packageUrl: ""
+    id: "ustc-gaoxin-3d",
+    name: "中国科学技术大学高新校区 3D",
+    version: "2026-06-17",
+    description: "约 71MB，含高新校区 3D 底图和结构图。",
+    packageUrl: "https://github.com/kw66/campus-memoir/releases/download/maps-20260617/ustc-gaoxin-3d.campus-memoir.json"
+  },
+  {
+    id: "ustc-east-3d",
+    name: "中国科学技术大学东校区 3D",
+    version: "2026-06-17",
+    description: "约 112MB，含东校区 3D 底图和结构图。",
+    packageUrl: "https://github.com/kw66/campus-memoir/releases/download/maps-20260617/ustc-east-3d.campus-memoir.json"
+  },
+  {
+    id: "ustc-west-3d",
+    name: "中国科学技术大学西校区 3D",
+    version: "2026-06-17",
+    description: "约 92MB，含西校区 3D 底图和结构图。",
+    packageUrl: "https://github.com/kw66/campus-memoir/releases/download/maps-20260617/ustc-west-3d.campus-memoir.json"
+  },
+  {
+    id: "ustc-central-3d",
+    name: "中国科学技术大学中校区 3D",
+    version: "2026-06-17",
+    description: "约 20MB，含中校区 3D 底图和结构图。",
+    packageUrl: "https://github.com/kw66/campus-memoir/releases/download/maps-20260617/ustc-central-3d.campus-memoir.json"
   }
 ];
 
@@ -1411,10 +1431,18 @@ async function downloadOfficialPackage(item) {
     await importSchoolPackageFile(file, { stayInDialog: true });
   } catch (error) {
     console.error(error);
-    setFormError("下载失败，请稍后重试。");
+    setFormError("自动导入失败，可点手动下载后再用导入。");
   } finally {
     setBulkBusy(false);
   }
+}
+
+function openOfficialPackageDownload(item) {
+  if (!item.packageUrl) {
+    setFormError("暂未配置下载地址。");
+    return;
+  }
+  window.open(item.packageUrl, "_blank", "noopener,noreferrer");
 }
 
 async function readOptionalStructureFile(file) {
@@ -1877,15 +1905,28 @@ function renderDownloadCatalog() {
     meta.textContent = item.version ? `${item.version} · ${item.description || "官方文件"}` : item.description || "官方文件";
     text.append(title, meta);
 
+    const actions = document.createElement("div");
+    actions.className = "download-actions";
+
     const button = document.createElement("button");
     button.className = "secondary-button";
     button.type = "button";
-    button.textContent = "下载到本地";
+    button.textContent = "下载并导入";
     button.addEventListener("click", () => {
       void downloadOfficialPackage(item);
     });
 
-    row.append(text, button);
+    const fallback = document.createElement("button");
+    fallback.className = "secondary-button";
+    fallback.type = "button";
+    fallback.textContent = "手动";
+    fallback.title = "打开 GitHub Release 下载链接";
+    fallback.addEventListener("click", () => {
+      openOfficialPackageDownload(item);
+    });
+
+    actions.append(button, fallback);
+    row.append(text, actions);
     els.downloadList.append(row);
   }
 }
