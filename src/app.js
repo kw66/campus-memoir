@@ -6536,11 +6536,12 @@ function drawGameScene(ctx, editData) {
   drawNearbyBuildingHints(ctx, editData);
   drawPlayer(ctx);
   drawTouchJoystick(ctx);
+  drawNearbyBuildingLabels(ctx, editData);
+  drawGamePhotoLabels(ctx);
 }
 
 function drawGamePhotoMarkers(ctx) {
   const showFarMarkers = state.gameData.settings.showPhotoMarkers !== false;
-  const showPhotoLabels = showFarMarkers && state.gameData.settings.showInteractionMarkers !== false;
   const playerRadius = state.gameData.player.radius || DEFAULT_PLAYER_RADIUS;
   for (const spot of state.gameData.photoSpots) {
     const screen = imageToScreen(spot);
@@ -6568,22 +6569,27 @@ function drawGamePhotoMarkers(ctx) {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(String(spot.photos.length || 0), screen.x, screen.y + 0.5);
-    if (showPhotoLabels && (spot.name || getPhotoSpotDisplayName(spot))) {
-      const label = getPhotoSpotDisplayName(spot);
-      const metrics = ctx.measureText(label);
-      const labelWidth = Math.min(metrics.width + 16, 180);
-      ctx.fillStyle = "rgba(255, 250, 240, 0.9)";
-      ctx.strokeStyle = "rgba(31, 85, 78, 0.22)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.roundRect(screen.x - labelWidth / 2, screen.y - radius - 28, labelWidth, 22, 6);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#1d2a24";
-      ctx.font = "800 12px Microsoft YaHei, sans-serif";
-      ctx.fillText(label, screen.x, screen.y - radius - 17);
-    }
     ctx.restore();
+  }
+}
+
+function drawGamePhotoLabels(ctx) {
+  const showFarMarkers = state.gameData.settings.showPhotoMarkers !== false;
+  const showPhotoLabels = showFarMarkers && state.gameData.settings.showInteractionMarkers !== false;
+  if (!showPhotoLabels) return;
+  const playerRadius = state.gameData.player.radius || DEFAULT_PLAYER_RADIUS;
+  for (const spot of state.gameData.photoSpots) {
+    if (!spot.name && !getPhotoSpotDisplayName(spot)) continue;
+    const screen = imageToScreen(spot);
+    const radius = Math.max(7, (spot.radius || playerRadius) * state.view.scale * 0.36);
+    if (screen.x < -radius || screen.y < -radius || screen.x > state.canvasSize.width + radius || screen.y > state.canvasSize.height + radius) continue;
+    const active = spot.id === state.gameData.selectedPhotoSpotId || spot.id === state.currentNearbyPhotoSpotId;
+    if (!active && !showFarMarkers) continue;
+    drawGameLabel(ctx, getPhotoSpotDisplayName(spot), screen.x, screen.y - radius - 17, {
+      selected: active,
+      maxWidth: 180,
+      font: "800 12px Microsoft YaHei, sans-serif"
+    });
   }
 }
 
@@ -6620,32 +6626,54 @@ function drawNearbyBuildingHints(ctx, editData) {
       }
       ctx.restore();
     }
-    ctx.save();
-    const bounds = getRegionLabelBounds(getRegionAreas(region));
-    if (bounds && showNames) {
-      const center = imageToScreen({
-        x: (bounds.left + bounds.right) / 2,
-        y: (bounds.top + bounds.bottom) / 2
-      });
-      const label = getStructureInteractionLabel(region);
-      ctx.font = "800 13px Microsoft YaHei, sans-serif";
-      const metrics = ctx.measureText(label);
-      const width = Math.min(metrics.width + 18, 220);
-      const height = 24;
-      ctx.fillStyle = selected ? "rgba(31, 85, 78, 0.92)" : isNearby ? "rgba(255, 250, 240, 0.82)" : "rgba(255, 250, 240, 0.68)";
-      ctx.strokeStyle = selected ? "rgba(31, 85, 78, 0.34)" : "rgba(31, 85, 78, 0.16)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.roundRect(center.x - width / 2, center.y - height / 2, width, height, 6);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = selected ? "#fffaf0" : "#1d2a24";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(label, center.x, center.y, width - 10);
-    }
-    ctx.restore();
   }
+}
+
+function drawNearbyBuildingLabels(ctx, editData) {
+  const nearby = new Set(state.currentNearbyBuildingIds);
+  const showNames = state.gameData.settings.showInteractionMarkers !== false;
+  if (!showNames) return;
+  for (const region of editData.structureRegions || []) {
+    if (region.visible === false || !isInteractiveStructureType(region.type || "custom")) continue;
+    const bounds = getRegionLabelBounds(getRegionAreas(region));
+    if (!bounds) continue;
+    const center = imageToScreen({
+      x: (bounds.left + bounds.right) / 2,
+      y: (bounds.top + bounds.bottom) / 2
+    });
+    const isNearby = nearby.has(region.id);
+    const selected = region.id === state.gameData.selectedBuildingId;
+    drawGameLabel(ctx, getStructureInteractionLabel(region), center.x, center.y, {
+      selected,
+      nearby: isNearby,
+      maxWidth: 220,
+      font: "800 13px Microsoft YaHei, sans-serif"
+    });
+  }
+}
+
+function drawGameLabel(ctx, label, x, y, options = {}) {
+  if (!label) return;
+  const font = options.font || "800 12px Microsoft YaHei, sans-serif";
+  ctx.save();
+  ctx.font = font;
+  const metrics = ctx.measureText(label);
+  const width = Math.min(metrics.width + 18, options.maxWidth || 220);
+  const height = options.height || 24;
+  const selected = Boolean(options.selected);
+  const nearby = Boolean(options.nearby);
+  ctx.fillStyle = selected ? "rgba(31, 85, 78, 0.94)" : nearby ? "rgba(255, 250, 240, 0.90)" : "rgba(255, 250, 240, 0.82)";
+  ctx.strokeStyle = selected ? "rgba(31, 85, 78, 0.36)" : "rgba(31, 85, 78, 0.18)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x - width / 2, y - height / 2, width, height, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = selected ? "#fffaf0" : "#1d2a24";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, x, y, width - 10);
+  ctx.restore();
 }
 
 function drawPlayer(ctx) {
