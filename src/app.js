@@ -21,6 +21,9 @@ const MOVE_SLIDE_MIN_DISTANCE = 0.5;
 const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
 const PHOTO_SPOT_NAME_PREFIX = "拍照点";
+const EXPLORATION_TARGET_GRID_COUNT = 52;
+const EXPLORATION_MIN_GRID_SIZE = 90;
+const EXPLORATION_MAX_GRID_SIZE = 240;
 const STATS_COUNTER_RPC_URL = "https://ypefmpeekfucmarbbdov.supabase.co";
 const STATS_COUNTER_RPC_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlwZWZtcGVla2Z1Y21hcmJiZG92Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5NTA2NTYsImV4cCI6MjA4MTUyNjY1Nn0.XTOQNFuuwfu9nwDTnO9-NEqlzZnzdCVnEmYEJh0rXf8";
 const STATS_COUNTER_IDS = {
@@ -380,6 +383,7 @@ const state = {
   gameDirty: false,
   gamePanelKey: "",
   gameNotice: "",
+  explorationCache: null,
   globalStats: { totalPv: 0, todayPv: 0, totalUv: 0, todayUv: 0 },
   globalStatsStatus: "正在读取校园足迹...",
   photoUrlCache: new Map(),
@@ -479,6 +483,9 @@ const els = {
   gameInfoCloseButton: document.querySelector("#gameInfoCloseButton"),
   globalStatsPanel: document.querySelector("#globalStatsPanel"),
   globalStatsStatus: document.querySelector("#globalStatsStatus"),
+  explorationProgress: document.querySelector("#explorationProgress"),
+  explorationProgressText: document.querySelector("#explorationProgressText"),
+  explorationProgressFill: document.querySelector("#explorationProgressFill"),
   editorToggleButton: document.querySelector("#editorToggleButton"),
   zoomReadout: document.querySelector("#zoomReadout"),
   schoolDialog: document.querySelector("#schoolDialog"),
@@ -2610,6 +2617,7 @@ function clearMapRenderCache() {
   state.mapAlphaSampleCanvas.height = 1;
   state.interactionPreviewScale = 1;
   state.mapRenderWarm = false;
+  clearExplorationCache();
   clearStructureLayerCache();
 }
 
@@ -2622,10 +2630,12 @@ function clearStructureLayerCache() {
 
 function markStructureLayerDirty() {
   state.structureLayerDirty = true;
+  clearExplorationCache();
 }
 
 function markGameDirty(options = {}) {
   state.gameDirty = true;
+  clearExplorationCache();
   const school = getSelectedSchool();
   if (!school) return;
   state.gameCache.set(school.id, state.gameData);
@@ -3088,6 +3098,201 @@ function drawCoverImage(ctx, image, x, y, width, height) {
   return true;
 }
 
+function clearExplorationCache() {
+  state.explorationCache = null;
+}
+
+function updateExplorationProgressUi() {
+  if (!els.explorationProgress || els.explorationProgress.hidden) return;
+  const progress = getExplorationProgress();
+  const percentText = `${Math.round(progress.percent)}%`;
+  els.explorationProgressText.textContent = percentText;
+  els.explorationProgressFill.style.width = `${clamp(progress.percent, 0, 100).toFixed(1)}%`;
+  els.explorationProgress.title = `探索 ${percentText}，已点亮 ${progress.litCells}/${progress.totalCells} 个区域`;
+}
+
+function getExplorationProgress() {
+  const school = getSelectedSchool();
+  if (!school || !state.mapImage || !state.mapNaturalSize.width || !state.mapNaturalSize.height) return createEmptyExplorationProgress();
+  const editData = getSelectedEditData();
+  const key = createExplorationCacheKey(school, editData, state.gameData);
+  if (state.explorationCache?.key === key) return state.explorationCache.progress;
+  const progress = calculateExplorationProgress(editData, state.gameData);
+  state.explorationCache = { key, progress };
+  return progress;
+}
+
+function getMemoryStructureIds(editData) {
+  return (editData?.structureRegions || [])
+    .filter((region) => region.visible !== false && isInteractiveStructureType(region.type || "custom"))
+    .map((region) => region.id)
+    .filter(Boolean);
+}
+
+function createEmptyExplorationProgress() {
+  return {
+    percent: 0,
+    litCells: 0,
+    totalCells: 0,
+    gridSize: 0,
+    columns: 0,
+    rows: 0
+  };
+}
+
+function createExplorationCacheKey(school, editData, gameData) {
+  const structures = (editData.structureRegions || [])
+    .filter((region) => region.visible !== false && isInteractiveStructureType(region.type))
+    .map((region) => `${region.id}:${region.type}:${region.visible !== false ? 1 : 0}:${getRegionAreaCount(region)}:${hasLitBuildingMemory(gameData.buildings?.[region.id]) ? 1 : 0}`)
+    .join("|");
+  const spots = (gameData.photoSpots || [])
+    .map((spot) => `${Math.round(spot.x)},${Math.round(spot.y)}`)
+    .join("|");
+  return [
+    school.id,
+    state.mapNaturalSize.width,
+    state.mapNaturalSize.height,
+    editData.cropPolygon?.length || 0,
+    structures,
+    spots
+  ].join(";");
+}
+
+function calculateExplorationProgress(editData, gameData) {
+  const width = state.mapNaturalSize.width;
+  const height = state.mapNaturalSize.height;
+  const gridSize = getExplorationGridSize(width, height);
+  const columns = Math.max(1, Math.ceil(width / gridSize));
+  const rows = Math.max(1, Math.ceil(height / gridSize));
+  const cells = Array.from({ length: columns * rows }, () => ({ valid: false, lit: false, hasBuilding: false }));
+  const indexFor = (col, row) => row * columns + col;
+  const validInteractiveRegions = (editData.structureRegions || [])
+    .filter((region) => region.visible !== false && isInteractiveStructureType(region.type));
+  const litRegions = validInteractiveRegions
+    .filter((region) => hasLitBuildingMemory(gameData.buildings?.[region.id]));
+
+  for (const region of validInteractiveRegions) {
+    markRegionCells(region, gridSize, columns, rows, (index) => {
+      cells[index].hasBuilding = true;
+    });
+  }
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < columns; col++) {
+      const index = indexFor(col, row);
+      const bounds = getExplorationCellBounds(col, row, gridSize, width, height);
+      const hasTransparent = explorationCellHasTransparentPixel(bounds);
+      if (hasTransparent && !cells[index].hasBuilding) continue;
+      if (!explorationCellHasVisibleMap(bounds)) continue;
+      cells[index].valid = true;
+    }
+  }
+
+  for (const region of litRegions) {
+    markRegionCells(region, gridSize, columns, rows, (index) => {
+      cells[index].lit = true;
+    });
+  }
+
+  for (const spot of gameData.photoSpots || []) {
+    const col = Math.floor(clamp(spot.x, 0, Math.max(0, width - 1)) / gridSize);
+    const row = Math.floor(clamp(spot.y, 0, Math.max(0, height - 1)) / gridSize);
+    const index = indexFor(clamp(col, 0, columns - 1), clamp(row, 0, rows - 1));
+    cells[index].lit = true;
+  }
+
+  let totalCells = 0;
+  let litCells = 0;
+  for (const cell of cells) {
+    if (!cell.valid) continue;
+    totalCells += 1;
+    if (cell.lit) litCells += 1;
+  }
+  return {
+    percent: totalCells ? litCells / totalCells * 100 : 0,
+    litCells,
+    totalCells,
+    gridSize,
+    columns,
+    rows
+  };
+}
+
+function getExplorationGridSize(width, height) {
+  const base = Math.sqrt((width * height) / (EXPLORATION_TARGET_GRID_COUNT * EXPLORATION_TARGET_GRID_COUNT));
+  return clamp(Math.round(base / 10) * 10, EXPLORATION_MIN_GRID_SIZE, EXPLORATION_MAX_GRID_SIZE);
+}
+
+function getExplorationCellBounds(col, row, gridSize, width, height) {
+  return {
+    left: col * gridSize,
+    top: row * gridSize,
+    right: Math.min(width, (col + 1) * gridSize),
+    bottom: Math.min(height, (row + 1) * gridSize)
+  };
+}
+
+function explorationCellHasTransparentPixel(bounds) {
+  return getExplorationCellSamplePoints(bounds).some((point) => !isPointOnVisibleMap(point));
+}
+
+function explorationCellHasVisibleMap(bounds) {
+  return getExplorationCellSamplePoints(bounds).some(isPointOnVisibleMap);
+}
+
+function getExplorationCellSamplePoints(bounds) {
+  const left = Math.max(0, bounds.left + 1);
+  const top = Math.max(0, bounds.top + 1);
+  const right = Math.max(left, bounds.right - 1);
+  const bottom = Math.max(top, bounds.bottom - 1);
+  const cx = (left + right) / 2;
+  const cy = (top + bottom) / 2;
+  return [
+    { x: cx, y: cy },
+    { x: left, y: top },
+    { x: right, y: top },
+    { x: left, y: bottom },
+    { x: right, y: bottom }
+  ];
+}
+
+function markRegionCells(region, gridSize, columns, rows, mark) {
+  const bounds = getRegionLabelBounds(getRegionAreas(region));
+  if (!bounds) return;
+  const minCol = clamp(Math.floor(bounds.left / gridSize), 0, columns - 1);
+  const maxCol = clamp(Math.floor(Math.max(bounds.left, bounds.right - 1) / gridSize), 0, columns - 1);
+  const minRow = clamp(Math.floor(bounds.top / gridSize), 0, rows - 1);
+  const maxRow = clamp(Math.floor(Math.max(bounds.top, bounds.bottom - 1) / gridSize), 0, rows - 1);
+  for (let row = minRow; row <= maxRow; row++) {
+    for (let col = minCol; col <= maxCol; col++) {
+      const cellBounds = getExplorationCellBounds(col, row, gridSize, state.mapNaturalSize.width, state.mapNaturalSize.height);
+      if (!regionIntersectsExplorationCell(region, cellBounds)) continue;
+      mark(row * columns + col);
+    }
+  }
+}
+
+function regionIntersectsExplorationCell(region, bounds) {
+  const points = getExplorationCellSamplePoints(bounds);
+  if (points.some((point) => isPointInRegion(point, region))) return true;
+  const center = { x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2 };
+  if (distanceToRegion(center, getRegionAreas(region), region) <= Math.hypot(bounds.right - bounds.left, bounds.bottom - bounds.top) / 2) return true;
+  return getRegionAreas(region).some((area) => {
+    const areaBounds = getAreaBounds(area);
+    return areaBounds ? boundsOverlap(bounds, areaBounds) : false;
+  });
+}
+
+function boundsOverlap(a, b) {
+  return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+}
+
+function hasLitBuildingMemory(building) {
+  if (!building) return false;
+  if (building.customName || building.photos?.length || building.entrances?.length || building.rooms?.length) return true;
+  return false;
+}
+
 function renderGamePanel(options = {}) {
   const school = getSelectedSchool();
   const visible = Boolean(school && state.mapImage && !state.editorEnabled);
@@ -3095,6 +3300,8 @@ function renderGamePanel(options = {}) {
   els.gamePanel.hidden = !visible;
   els.mapActions.hidden = !visible || insideBuilding;
   els.zoomReadout.hidden = visible && insideBuilding;
+  els.explorationProgress.hidden = !visible || insideBuilding;
+  updateExplorationProgressUi();
   els.mapPhotoMarkersToggle.checked = state.gameData.settings.showPhotoMarkers !== false;
   els.mapInteractionMarkersToggle.checked = state.gameData.settings.showInteractionMarkers !== false;
   els.mapPeopleMarkersToggle.checked = state.gameData.settings.showPeopleMarkers !== false;
@@ -4447,18 +4654,22 @@ async function getLocalPlayerStats() {
     schoolCount: state.schools.length,
     photoCount: 0,
     peopleCount: 0,
-    buildingCount: 0,
-    venueCount: 0
+    activeBuildingCount: 0,
+    totalBuildingCount: 0
   };
   for (const school of state.schools) {
     const data = school.id === state.selectedSchoolId
       ? state.gameData
       : await getGameData(school.id).catch(() => createEmptyGameData());
+    const editData = school.id === state.selectedSchoolId
+      ? getSelectedEditData()
+      : await getEditData(school.id).catch(() => createEmptyEditData());
+    const structureBuildingIds = getMemoryStructureIds(editData);
     stats.photoCount += (data.photoSpots || []).reduce((sum, spot) => sum + (spot.photos?.length || 0), 0);
-    stats.buildingCount += Object.keys(data.buildings || {}).length;
+    stats.totalBuildingCount += structureBuildingIds.length;
+    stats.activeBuildingCount += structureBuildingIds.filter((id) => (data.buildings?.[id]?.photos || []).length > 0).length;
     for (const building of Object.values(data.buildings || {})) {
       stats.photoCount += (building.photos || []).length;
-      stats.venueCount += (building.rooms || []).length;
       for (const room of building.rooms || []) {
         stats.photoCount += (room.photos || []).length;
         stats.peopleCount += (room.people || []).length;
@@ -4471,7 +4682,7 @@ async function getLocalPlayerStats() {
 
 function renderGlobalStatsPanel(localStats = null) {
   if (!els.globalStatsPanel) return;
-  const local = localStats || { schoolCount: 0, photoCount: 0, peopleCount: 0, buildingCount: 0, venueCount: 0 };
+  const local = localStats || { schoolCount: 0, photoCount: 0, peopleCount: 0, activeBuildingCount: 0, totalBuildingCount: 0 };
   const stats = state.globalStats || {};
   const groups = [
     {
@@ -4487,7 +4698,7 @@ function renderGlobalStatsPanel(localStats = null) {
         ["校区", local.schoolCount, ""],
         ["拍照", local.photoCount, ""],
         ["人物", local.peopleCount, ""],
-        ["建筑", local.buildingCount + local.venueCount, ""]
+        ["建筑", `${local.activeBuildingCount}/${local.totalBuildingCount}`, ""]
       ]
     }
   ];
@@ -4498,7 +4709,7 @@ function renderGlobalStatsPanel(localStats = null) {
         ${group.items.map(([label, total, today]) => `
           <div class="stat-card">
             <span>${escapeHtml(label)}</span>
-            <strong>${escapeHtml(formatCompactCount(total))}</strong>
+            <strong>${escapeHtml(formatStatValue(total))}</strong>
             ${today === "" ? "" : `<em>今日 ${escapeHtml(formatCompactCount(today))}</em>`}
           </div>
         `).join("")}
@@ -4560,6 +4771,10 @@ function formatCompactCount(value) {
   const count = clampInt(value, 0, 99999999);
   if (count >= 100000) return `${(count / 10000).toFixed(1)}万`;
   return String(count);
+}
+
+function formatStatValue(value) {
+  return typeof value === "string" ? value : formatCompactCount(value);
 }
 
 function wrapIndex(index, length) {
@@ -9464,6 +9679,7 @@ function getGameTextState() {
   const item = getSelectedItem();
   const person = getSelectedPerson();
   const venueRule = getVenueRule(room, building);
+  const exploration = getExplorationProgress();
   return {
     mode: state.editorEnabled ? "editor" : state.gameData.location.kind,
     coordinateSystem: "map image pixels, origin top-left, x right, y down",
@@ -9480,6 +9696,12 @@ function getGameTextState() {
       screenY: state.mapImage ? Number(imageToScreen(player).y.toFixed(2)) : 0
     },
     photoSpotCount: state.gameData.photoSpots.length,
+    exploration: {
+      percent: Number(exploration.percent.toFixed(1)),
+      litCells: exploration.litCells,
+      totalCells: exploration.totalCells,
+      gridSize: exploration.gridSize
+    },
     activePhotoSpotId: spot?.id || "",
     activePhotoSpotName: spot ? getPhotoSpotDisplayName(spot) : "",
     activePhotoCount: spot?.photos?.length || 0,

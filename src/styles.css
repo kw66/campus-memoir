@@ -309,6 +309,53 @@ button:disabled {
   pointer-events: none;
 }
 
+.exploration-progress {
+  position: absolute;
+  top: 10px;
+  left: 74px;
+  z-index: 2;
+  width: min(220px, calc(100% - 420px));
+  min-width: 152px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--line-strong), transparent 22%);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel), transparent 7%);
+  box-shadow: 0 8px 20px rgba(49, 44, 33, 0.1);
+  pointer-events: none;
+}
+
+.exploration-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.exploration-progress-row strong {
+  font-size: 13px;
+}
+
+.exploration-progress-track {
+  height: 6px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line), #fff 54%);
+}
+
+.exploration-progress-track span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #5d984b, #c8a746);
+  transition: width 180ms ease;
+}
+
 .map-actions {
   position: absolute;
   top: 10px;
@@ -1675,6 +1722,12 @@ textarea.game-input {
   .info-panel {
     height: auto;
     min-height: 360px;
+  }
+
+  .exploration-progress {
+    top: 88px;
+    left: 10px;
+    width: min(220px, calc(100% - 20px));
   }
 
   .info-panel {
