@@ -97,11 +97,17 @@
           <div class="game-panel" id="gamePanel" hidden></div>
 
           <input id="spotPhotoInput" type="file" accept="image/*" multiple hidden />
+          <input id="spotCameraInput" type="file" accept="image/*" capture="environment" hidden />
           <input id="buildingPhotoInput" type="file" accept="image/*" multiple hidden />
+          <input id="buildingCameraInput" type="file" accept="image/*" capture="environment" hidden />
           <input id="roomPhotoInput" type="file" accept="image/*" multiple hidden />
+          <input id="roomCameraInput" type="file" accept="image/*" capture="environment" hidden />
           <input id="itemPhotoInput" type="file" accept="image/*" multiple hidden />
+          <input id="itemCameraInput" type="file" accept="image/*" capture="environment" hidden />
           <input id="playerPortraitInput" type="file" accept="image/*" hidden />
+          <input id="playerPortraitCameraInput" type="file" accept="image/*" capture="user" hidden />
           <input id="personPhotoInput" type="file" accept="image/*" hidden />
+          <input id="personCameraInput" type="file" accept="image/*" capture="environment" hidden />
 
           <div class="missing-map-actions" id="missingMapActions" hidden>
             <button class="primary-button" id="reimportMapButton" type="button">重新导入地图图片</button>
@@ -381,6 +387,6 @@
       </form>
     </dialog>
 
-    <script src="./src/app.js?v=20260618c"></script>
+    <script src="./src/app.js?v=20260618d"></script>
   </body>
 </html>

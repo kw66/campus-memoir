@@ -565,11 +565,17 @@ const els = {
   infoBody: document.querySelector("#infoBody"),
   gamePanel: document.querySelector("#gamePanel"),
   spotPhotoInput: document.querySelector("#spotPhotoInput"),
+  spotCameraInput: document.querySelector("#spotCameraInput"),
   buildingPhotoInput: document.querySelector("#buildingPhotoInput"),
+  buildingCameraInput: document.querySelector("#buildingCameraInput"),
   roomPhotoInput: document.querySelector("#roomPhotoInput"),
+  roomCameraInput: document.querySelector("#roomCameraInput"),
   itemPhotoInput: document.querySelector("#itemPhotoInput"),
+  itemCameraInput: document.querySelector("#itemCameraInput"),
   playerPortraitInput: document.querySelector("#playerPortraitInput"),
+  playerPortraitCameraInput: document.querySelector("#playerPortraitCameraInput"),
   personPhotoInput: document.querySelector("#personPhotoInput"),
+  personCameraInput: document.querySelector("#personCameraInput"),
   missingMapActions: document.querySelector("#missingMapActions"),
   reimportMapButton: document.querySelector("#reimportMapButton"),
   reimportMapInput: document.querySelector("#reimportMapInput"),
@@ -1126,36 +1132,18 @@ function bindEvents() {
   els.gamePanel.addEventListener("click", onGamePanelClick);
   els.gamePanel.addEventListener("input", onGamePanelInput);
   els.gamePanel.addEventListener("change", onGamePanelChange);
-  els.spotPhotoInput.addEventListener("change", () => {
-    const files = [...(els.spotPhotoInput.files || [])];
-    els.spotPhotoInput.value = "";
-    if (files.length) void addPhotosAtPlayer(files);
-  });
-  els.buildingPhotoInput.addEventListener("change", () => {
-    const files = [...(els.buildingPhotoInput.files || [])];
-    els.buildingPhotoInput.value = "";
-    if (files.length) void addPhotosToSelectedBuilding(files);
-  });
-  els.roomPhotoInput.addEventListener("change", () => {
-    const files = [...(els.roomPhotoInput.files || [])];
-    els.roomPhotoInput.value = "";
-    if (files.length) void addPhotosToSelectedRoom(files);
-  });
-  els.itemPhotoInput.addEventListener("change", () => {
-    const files = [...(els.itemPhotoInput.files || [])];
-    els.itemPhotoInput.value = "";
-    if (files.length) void addPhotosToSelectedItem(files);
-  });
-  els.playerPortraitInput.addEventListener("change", () => {
-    const file = els.playerPortraitInput.files?.[0] || null;
-    els.playerPortraitInput.value = "";
-    if (file) void setPlayerPortraitFromDorm(file);
-  });
-  els.personPhotoInput.addEventListener("change", () => {
-    const file = els.personPhotoInput.files?.[0] || null;
-    els.personPhotoInput.value = "";
-    if (file) void setSelectedPersonPhoto(file);
-  });
+  bindPhotoInput(els.spotPhotoInput, addPhotosAtPlayer);
+  bindPhotoInput(els.spotCameraInput, addPhotosAtPlayer);
+  bindPhotoInput(els.buildingPhotoInput, addPhotosToSelectedBuilding);
+  bindPhotoInput(els.buildingCameraInput, addPhotosToSelectedBuilding);
+  bindPhotoInput(els.roomPhotoInput, addPhotosToSelectedRoom);
+  bindPhotoInput(els.roomCameraInput, addPhotosToSelectedRoom);
+  bindPhotoInput(els.itemPhotoInput, addPhotosToSelectedItem);
+  bindPhotoInput(els.itemCameraInput, addPhotosToSelectedItem);
+  bindSinglePhotoInput(els.playerPortraitInput, setPlayerPortraitFromDorm);
+  bindSinglePhotoInput(els.playerPortraitCameraInput, setPlayerPortraitFromDorm);
+  bindSinglePhotoInput(els.personPhotoInput, setSelectedPersonPhoto);
+  bindSinglePhotoInput(els.personCameraInput, setSelectedPersonPhoto);
 
   els.mapCanvas.addEventListener("pointerdown", onPointerDown);
   els.mapCanvas.addEventListener("pointermove", onPointerMove);
@@ -1170,6 +1158,22 @@ function bindEvents() {
     if (state.editorEnabled) clampView();
     else followPlayer();
     queueDraw();
+  });
+}
+
+function bindPhotoInput(input, handler) {
+  input?.addEventListener("change", () => {
+    const files = [...(input.files || [])];
+    input.value = "";
+    if (files.length) void handler(files);
+  });
+}
+
+function bindSinglePhotoInput(input, handler) {
+  input?.addEventListener("change", () => {
+    const file = input.files?.[0] || null;
+    input.value = "";
+    if (file) void handler(file);
   });
 }
 
@@ -3829,7 +3833,8 @@ function renderPhotoPanelHtml(spot) {
         ${entranceTarget ? `<button class="primary-button" type="button" data-game-action="enterFromPhotoSpot" ${entranceActive ? "" : "disabled"}>进入</button>` : ""}
         <button class="secondary-button" type="button" data-game-action="moveSpotPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
         <button class="secondary-button" type="button" data-game-action="moveSpotPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
-        <button class="secondary-button" type="button" data-game-action="uploadSpotPhoto">拍照</button>
+        <button class="secondary-button" type="button" data-game-action="captureSpotPhoto">拍照</button>
+        <button class="secondary-button" type="button" data-game-action="uploadSpotPhoto">相册</button>
         <button class="secondary-button danger" type="button" data-game-action="deletePhotoSpotSelected" ${canDeleteSpot || editSelectedId ? "" : "disabled"}>删除</button>
       </div>
       <div class="photo-list" data-photo-list="spot">
@@ -3894,7 +3899,8 @@ function renderCampusInteractionHtml(region, building) {
         <div class="game-actions dense">
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
-          <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto">拍照</button>
+          <button class="secondary-button" type="button" data-game-action="captureBuildingPhoto">拍照</button>
+          <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto">相册</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteBuildingPhoto" ${!editSelectedId ? "disabled" : ""}>删图</button>
           ${showEntranceTools ? `<button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>` : ""}
         </div>
@@ -3942,7 +3948,8 @@ function renderInteriorPanelHtml(building, room, item, person) {
   const dormPlayerPortraitHtml = selectedIsSelf ? `
         <div class="player-portrait-card">
           <span class="player-portrait-status">${state.gameData.player.portrait ? "地图大头贴已设置" : "地图仍使用默认圆点"}</span>
-          <button class="secondary-button" type="button" data-game-action="uploadPlayerPortrait">设大头贴</button>
+          <button class="secondary-button" type="button" data-game-action="capturePlayerPortrait">拍大头贴</button>
+          <button class="secondary-button" type="button" data-game-action="uploadPlayerPortrait">选大头贴</button>
         </div>
   ` : "";
   const itemPhotoUrl = getRepresentativePhotoUrl(item);
@@ -3970,7 +3977,8 @@ function renderInteriorPanelHtml(building, room, item, person) {
           ${roomPhotoUrl ? `<img src="${roomPhotoUrl}" alt="">` : `<span>场地照片</span>`}
         </div>
         <div class="game-actions dense">
-          <button class="secondary-button" type="button" data-game-action="uploadRoomPhoto">场地图</button>
+          <button class="secondary-button" type="button" data-game-action="captureRoomPhoto">拍照</button>
+          <button class="secondary-button" type="button" data-game-action="uploadRoomPhoto">相册</button>
           <button class="secondary-button" type="button" data-game-action="prevRoomPhoto" ${!room || room.photos.length < 2 ? "disabled" : ""}>上一张</button>
           <button class="secondary-button" type="button" data-game-action="nextRoomPhoto" ${!room || room.photos.length < 2 ? "disabled" : ""}>下一张</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteRoomPhoto" ${!room || !room.photos.length ? "disabled" : ""}>删图</button>
@@ -3991,7 +3999,8 @@ function renderInteriorPanelHtml(building, room, item, person) {
             </div>
           </div>
           <div class="game-actions dense">
-            <button class="secondary-button" type="button" data-game-action="uploadItemPhoto">加照片</button>
+            <button class="secondary-button" type="button" data-game-action="captureItemPhoto">拍照</button>
+            <button class="secondary-button" type="button" data-game-action="uploadItemPhoto">相册</button>
             <button class="secondary-button" type="button" data-game-action="prevItemPhoto" ${!item || item.photos.length < 2 ? "disabled" : ""}>上一张</button>
             <button class="secondary-button" type="button" data-game-action="nextItemPhoto" ${!item || item.photos.length < 2 ? "disabled" : ""}>下一张</button>
             <button class="secondary-button" type="button" data-game-action="saveItem">保存</button>
@@ -4017,7 +4026,8 @@ function renderInteriorPanelHtml(building, room, item, person) {
           </div>
           ${dormPlayerPortraitHtml}
           <div class="game-actions dense">
-            <button class="secondary-button" type="button" data-game-action="uploadPersonPhoto">人物图</button>
+            <button class="secondary-button" type="button" data-game-action="capturePersonPhoto">拍照</button>
+            <button class="secondary-button" type="button" data-game-action="uploadPersonPhoto">相册</button>
             <button class="secondary-button" type="button" data-game-action="savePerson">保存</button>
             <button class="secondary-button" type="button" data-game-action="sayHello">你好</button>
             <button class="secondary-button danger" type="button" data-game-action="deletePerson">删人物</button>
@@ -4076,6 +4086,9 @@ function onGamePanelChange(event) {
 
 function handleGameAction(action, button) {
   switch (action) {
+    case "captureSpotPhoto":
+      els.spotCameraInput.click();
+      return;
     case "uploadSpotPhoto":
       els.spotPhotoInput.click();
       return;
@@ -4096,6 +4109,9 @@ function handleGameAction(action, button) {
       return;
     case "selectInteraction":
       selectNearbyInteraction(button.dataset.interactionKey || "");
+      return;
+    case "captureBuildingPhoto":
+      els.buildingCameraInput.click();
       return;
     case "uploadBuildingPhoto":
       els.buildingPhotoInput.click();
@@ -4133,8 +4149,18 @@ function handleGameAction(action, button) {
     case "saveRoom":
       saveSelectedRoom();
       return;
+    case "captureRoomPhoto":
+      els.roomCameraInput.click();
+      return;
     case "uploadRoomPhoto":
       els.roomPhotoInput.click();
+      return;
+    case "capturePlayerPortrait":
+      if (!isDormRoom(getSelectedRoom()) || !isSelfPerson(getSelectedPerson())) {
+        setGameNotice("请先在寝室里选择自己");
+        return;
+      }
+      els.playerPortraitCameraInput.click();
       return;
     case "uploadPlayerPortrait":
       if (!isDormRoom(getSelectedRoom()) || !isSelfPerson(getSelectedPerson())) {
@@ -4160,6 +4186,9 @@ function handleGameAction(action, button) {
       return;
     case "selectItem":
       selectItem(button.dataset.itemId || "");
+      return;
+    case "captureItemPhoto":
+      els.itemCameraInput.click();
       return;
     case "uploadItemPhoto":
       els.itemPhotoInput.click();
@@ -4190,6 +4219,9 @@ function handleGameAction(action, button) {
       return;
     case "selectPerson":
       selectPerson(button.dataset.personId || "");
+      return;
+    case "capturePersonPhoto":
+      els.personCameraInput.click();
       return;
     case "uploadPersonPhoto":
       els.personPhotoInput.click();
