@@ -61,6 +61,10 @@ function isInteractiveStructureType(type) {
   return !["road", "water", "wall"].includes(type);
 }
 
+function canStructureUseEntrance(type) {
+  return type !== "gate";
+}
+
 const DEFAULT_EDIT_DATA = {
   version: 1,
   cropPolygon: [],
@@ -1824,6 +1828,7 @@ function renderCurrentSchool() {
 
 async function renderGameView(options = {}) {
   const school = getSelectedSchool();
+  els.zoomReadout.hidden = false;
   state.mapImage = null;
   state.mapNaturalSize = { width: 0, height: 0 };
   clearMapRenderCache();
@@ -1995,7 +2000,7 @@ function clampMoveTarget(origin, delta) {
 }
 
 function getProjectedSlideMove(origin, direction, distanceValue, blockedPoint) {
-  const normal = estimateBlockedBoundaryNormal(blockedPoint);
+  const normal = findBlockingNormal(blockedPoint) || estimateBlockedBoundaryNormal(blockedPoint);
   if (!normal) return null;
   const dot = direction.x * normal.x + direction.y * normal.y;
   const projected = {
@@ -2004,12 +2009,34 @@ function getProjectedSlideMove(origin, direction, distanceValue, blockedPoint) {
   };
   const projectedLength = Math.hypot(projected.x, projected.y);
   const tangent = normalizeVector(projected);
-  if (!tangent) return null;
-  const projectedDistance = distanceValue * projectedLength;
-  return findFarthestWalkableMove(origin, {
-    x: tangent.x * projectedDistance,
-    y: tangent.y * projectedDistance
-  });
+  if (tangent) {
+    const projectedDistance = distanceValue * projectedLength;
+    const projectedMove = findFarthestWalkableMove(origin, {
+      x: tangent.x * projectedDistance,
+      y: tangent.y * projectedDistance
+    });
+    if (projectedMove) return projectedMove;
+  }
+  return getTangentSlideMove(origin, direction, normal, distanceValue);
+}
+
+function getTangentSlideMove(origin, direction, normal, distanceValue) {
+  const first = normalizeVector({ x: -normal.y, y: normal.x });
+  if (!first) return null;
+  const second = { x: -first.x, y: -first.y };
+  const ordered = direction.x * first.x + direction.y * first.y >= direction.x * second.x + direction.y * second.y
+    ? [first, second]
+    : [second, first];
+  for (const tangent of ordered) {
+    for (const factor of [1, 0.75, 0.5, 0.25]) {
+      const move = findFarthestWalkableMove(origin, {
+        x: tangent.x * distanceValue * factor,
+        y: tangent.y * distanceValue * factor
+      });
+      if (move) return move;
+    }
+  }
+  return null;
 }
 
 function estimateBlockedBoundaryNormal(point) {
@@ -2129,9 +2156,26 @@ function handleGameKeyUp(event) {
 }
 
 function canPlayerMoveTo(point) {
-  if (!isPointOnVisibleMap(point)) return false;
-  const sample = sampleStructureAt(point);
+  if (!isPlayerCircleOnVisibleMap(point)) return false;
+  const sample = samplePlayerCollisionAt(point);
   return sample.walkable !== false;
+}
+
+function isPlayerCircleOnVisibleMap(point) {
+  const radius = getPlayerCollisionRadius(point);
+  if (!isPointOnVisibleMap(point)) return false;
+  const samples = [
+    point,
+    { x: point.x + radius, y: point.y },
+    { x: point.x - radius, y: point.y },
+    { x: point.x, y: point.y + radius },
+    { x: point.x, y: point.y - radius },
+    { x: point.x + radius * 0.7071, y: point.y + radius * 0.7071 },
+    { x: point.x - radius * 0.7071, y: point.y + radius * 0.7071 },
+    { x: point.x + radius * 0.7071, y: point.y - radius * 0.7071 },
+    { x: point.x - radius * 0.7071, y: point.y - radius * 0.7071 }
+  ];
+  return samples.every(isPointOnVisibleMap);
 }
 
 function isPointOnVisibleMap(point) {
@@ -2141,6 +2185,180 @@ function isPointOnVisibleMap(point) {
   const editData = getSelectedEditData();
   if (editData.cropPolygon?.length >= 3 && !pointInPolygon(point, editData.cropPolygon)) return false;
   return !isTransparentMapPixel(point);
+}
+
+function samplePlayerCollisionAt(point) {
+  const sample = sampleStructureAt(point);
+  if (sample.walkable === false) return sample;
+  const blocker = findNearestBlockingStructure(point);
+  if (!blocker) return sample;
+  return {
+    walkable: false,
+    top: blocker.hit,
+    hits: [blocker.hit, ...sample.hits]
+  };
+}
+
+function findBlockingNormal(point) {
+  const blocker = findNearestBlockingStructure(point);
+  if (!blocker?.normal) return null;
+  return blocker.normal;
+}
+
+function findNearestBlockingStructure(point) {
+  const radius = getPlayerCollisionRadius(point);
+  let best = null;
+  for (const hit of getBlockingStructureDistances(point)) {
+    if (hit.distance > radius) continue;
+    if (!best || hit.distance < best.distance) best = hit;
+  }
+  return best;
+}
+
+function getBlockingStructureDistances(point) {
+  const editData = getSelectedEditData();
+  const visibleObjects = getVisibleStructureObjectIds();
+  const hits = [];
+  for (const region of editData.structureRegions) {
+    if (region.visible === false || getStructureTypeWalkable(region.type, region.walkable)) continue;
+    const info = nearestRegionBoundaryInfo(point, region);
+    if (!info) continue;
+    hits.push({
+      distance: isPointInRegion(point, region) ? 0 : info.distance,
+      normal: info.normal,
+      hit: {
+        id: region.id,
+        name: region.name || "",
+        type: region.type || "custom",
+        walkable: false,
+        displayRank: getStructureDisplayRank(region.type),
+        walkRank: getStructureWalkRank(region.type)
+      }
+    });
+  }
+  for (const stroke of editData.judgementStrokes) {
+    if (!stroke.objectId || !visibleObjects.has(stroke.objectId)) continue;
+    if (getStructureTypeWalkable(stroke.type, stroke.walkable)) continue;
+    const info = nearestStrokeBoundaryInfo(point, stroke);
+    if (!info) continue;
+    hits.push({
+      distance: info.distance,
+      normal: info.normal,
+      hit: {
+        id: stroke.objectId || stroke.id,
+        name: stroke.name || "",
+        type: stroke.type || "custom",
+        walkable: false,
+        displayRank: getStructureDisplayRank(stroke.type),
+        walkRank: getStructureWalkRank(stroke.type)
+      }
+    });
+  }
+  return hits.sort((a, b) => a.distance - b.distance);
+}
+
+function nearestRegionBoundaryInfo(point, region) {
+  let best = null;
+  for (const area of getRegionAreas(region)) {
+    if (getRegionEraseAreas(region).some((eraseArea) => isPointInArea(point, eraseArea))) continue;
+    const info = nearestAreaBoundaryInfo(point, area, region);
+    if (!info) continue;
+    if (!best || info.distance < best.distance) best = info;
+  }
+  return best;
+}
+
+function nearestAreaBoundaryInfo(point, area, region) {
+  if (area.kind === "line") {
+    return nearestPolylineBoundaryInfo(point, area.points || [], false, Math.max(1, (Number(area.width) || LINEAR_STRUCTURE_WIDTH) / 2));
+  }
+  if (area.kind === "pixels") {
+    const bounds = pixelRunsBounds(area.pixels || []);
+    return bounds ? nearestBoundsBoundaryInfo(point, bounds) : null;
+  }
+  if (area.kind === "rect") return nearestBoundsBoundaryInfo(point, {
+    left: Math.min(area.x, area.x + area.width),
+    top: Math.min(area.y, area.y + area.height),
+    right: Math.max(area.x, area.x + area.width),
+    bottom: Math.max(area.y, area.y + area.height)
+  });
+  if (area.kind === "ellipse") return nearestPolylineBoundaryInfo(point, getAreaOutlinePoints(area), true, 0);
+  const outline = isLinearStructureType(region?.type)
+    ? getAreaOutlinePoints(area)
+    : area.kind === "parallelogram"
+      ? parallelogramPointsFromArea(area)
+      : area.points || getAreaOutlinePoints(area);
+  return nearestPolylineBoundaryInfo(point, outline, area.kind !== "line", isLinearStructureType(region?.type) ? LINEAR_STRUCTURE_WIDTH / 2 : 0);
+}
+
+function nearestStrokeBoundaryInfo(point, stroke) {
+  const points = stroke.points || [];
+  if (!points.length) return null;
+  return nearestPolylineBoundaryInfo(point, points, false, Math.max(0.5, (Number(stroke.size) || STRUCTURE_BRUSH_SIZE) / 2));
+}
+
+function nearestBoundsBoundaryInfo(point, bounds) {
+  const insideX = point.x >= bounds.left && point.x <= bounds.right;
+  const insideY = point.y >= bounds.top && point.y <= bounds.bottom;
+  if (insideX && insideY) {
+    const distances = [
+      { distance: point.x - bounds.left, normal: { x: -1, y: 0 } },
+      { distance: bounds.right - point.x, normal: { x: 1, y: 0 } },
+      { distance: point.y - bounds.top, normal: { x: 0, y: -1 } },
+      { distance: bounds.bottom - point.y, normal: { x: 0, y: 1 } }
+    ];
+    return distances.sort((a, b) => a.distance - b.distance)[0] || null;
+  }
+  const nearest = {
+    x: clamp(point.x, bounds.left, bounds.right),
+    y: clamp(point.y, bounds.top, bounds.bottom)
+  };
+  const distanceValue = distance(point, nearest);
+  return {
+    distance: distanceValue,
+    normal: normalizeVector({ x: point.x - nearest.x, y: point.y - nearest.y }) || { x: 0, y: -1 }
+  };
+}
+
+function nearestPolylineBoundaryInfo(point, points, closed, thickness = 0) {
+  if (!points?.length) return null;
+  if (points.length === 1) {
+    const distanceValue = Math.max(0, distance(point, points[0]) - thickness);
+    return {
+      distance: distanceValue,
+      normal: normalizeVector({ x: point.x - points[0].x, y: point.y - points[0].y }) || { x: 0, y: -1 }
+    };
+  }
+  let best = null;
+  const count = closed && points.length > 2 ? points.length : points.length - 1;
+  for (let index = 0; index < count; index++) {
+    const start = points[index];
+    const end = points[(index + 1) % points.length];
+    const nearest = nearestPointOnSegment(point, start, end);
+    const distanceValue = Math.max(0, distance(point, nearest) - thickness);
+    if (!best || distanceValue < best.distance) {
+      best = {
+        distance: distanceValue,
+        normal: normalizeVector({ x: point.x - nearest.x, y: point.y - nearest.y })
+          || normalizeVector({ x: -(end.y - start.y), y: end.x - start.x })
+          || { x: 0, y: -1 }
+      };
+    }
+  }
+  return best;
+}
+
+function nearestPointOnSegment(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (!lengthSq) return { x: start.x, y: start.y };
+  const t = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSq, 0, 1);
+  return { x: start.x + dx * t, y: start.y + dy * t };
+}
+
+function getPlayerCollisionRadius(point = state.gameData.player) {
+  return Math.max(1, Number(point?.radius || state.gameData.player.radius) || DEFAULT_PLAYER_RADIUS);
 }
 
 function isTransparentMapPixel(point) {
@@ -2249,6 +2467,21 @@ async function saveCurrentGameData() {
 }
 
 function updateNearbyGameContext() {
+  if (state.gameData.location.kind === "building") {
+    const buildingId = state.gameData.location.buildingId || state.gameData.selectedBuildingId || "";
+    state.currentNearbyInteractionTargets = [];
+    state.currentNearbyPhotoSpotId = "";
+    state.currentNearbyBuildingIds = [];
+    state.selectedNearbyInteractionKey = "";
+    state.defaultPhotoSpotInteractionKey = "";
+    state.gameData.selectedPhotoSpotId = "";
+    state.gameData.selectedSpotPhotoId = "";
+    state.selectedSpotPhotoForEditId = "";
+    state.selectedBuildingPhotoForEditId = "";
+    state.gameData.selectedBuildingId = buildingId;
+    if (buildingId) getOrCreateBuildingMemory(buildingId);
+    return;
+  }
   const player = state.gameData.player;
   const photoTarget = getNearbyPhotoSpotTarget(player);
   const structureTargets = getNearbyStructureTargets(player);
@@ -2579,12 +2812,14 @@ function getPhotoUrl(photo) {
 function renderGamePanel(options = {}) {
   const school = getSelectedSchool();
   const visible = Boolean(school && state.mapImage && !state.editorEnabled);
+  const insideBuilding = state.gameData.location.kind === "building";
   els.gamePanel.hidden = !visible;
-  els.mapActions.hidden = !visible;
+  els.mapActions.hidden = !visible || insideBuilding;
+  els.zoomReadout.hidden = visible && insideBuilding;
   els.mapPhotoMarkersToggle.checked = state.gameData.settings.showPhotoMarkers !== false;
   els.mapInteractionMarkersToggle.checked = state.gameData.settings.showInteractionMarkers !== false;
   if (!visible) return;
-  els.gamePanel.classList.toggle("inside-building", state.gameData.location.kind === "building");
+  els.gamePanel.classList.toggle("inside-building", insideBuilding);
   els.panelHeader.hidden = true;
   els.infoBody.hidden = true;
   const selectedTarget = getSelectedNearbyInteractionTarget();
@@ -2741,6 +2976,7 @@ function renderCampusInteractionHtml(region, building) {
   const hasBuilding = Boolean(region && building);
   const photoList = renderBuildingPhotoListHtml(building);
   const entranceCandidate = getEntranceLinkCandidate(region);
+  const showEntranceTools = canStructureUseEntrance(region?.type || "custom");
   const editSelectedId = getSelectedBuildingPhotoForEditId(building);
   const editIndex = getBuildingPhotoIndexById(building, editSelectedId);
   const moveBackDisabled = editIndex <= 0;
@@ -2755,9 +2991,9 @@ function renderCampusInteractionHtml(region, building) {
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
           <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto">拍照</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteBuildingPhoto" ${!editSelectedId ? "disabled" : ""}>删图</button>
-          <button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>
+          ${showEntranceTools ? `<button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>` : ""}
         </div>
-        <div class="entrance-list">${renderEntranceListHtml(region, building)}</div>
+        ${showEntranceTools ? `<div class="entrance-list">${renderEntranceListHtml(region, building)}</div>` : ""}
         <div class="photo-list building-photo-list" data-photo-list="building">
           ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
         </div>
@@ -2771,7 +3007,8 @@ function renderEntranceListHtml(region, building) {
   if (!entries.length) return `<span class="muted-inline">还没有入口</span>`;
   return entries.map(({ spot }, index) => `
     <span class="entrance-row">
-      ${escapeHtml(getPhotoSpotDisplayName(spot) || `入口${index + 1}`)}${spot.photos.length ? " 有图" : ""}
+      <span>${escapeHtml(getPhotoSpotDisplayName(spot) || `入口${index + 1}`)}${spot.photos.length ? " 有图" : ""}</span>
+      <button class="secondary-button compact" type="button" data-game-action="unlinkPhotoSpotEntrance" data-spot-id="${escapeAttr(spot.id)}">取消绑定</button>
     </span>
   `).join("");
 }
@@ -2940,6 +3177,9 @@ function handleGameAction(action, button) {
       return;
     case "linkPhotoSpotEntrance":
       linkNearbyPhotoSpotAsEntrance();
+      return;
+    case "unlinkPhotoSpotEntrance":
+      unlinkPhotoSpotEntranceBinding(button.dataset.spotId || "");
       return;
     case "enterFromPhotoSpot":
       enterFromActivePhotoSpot();
@@ -3200,6 +3440,30 @@ function deleteActiveSpot() {
   queueDraw();
 }
 
+function unlinkPhotoSpotEntranceBinding(spotId) {
+  const spot = state.gameData.photoSpots.find((item) => item.id === spotId);
+  const entrance = getPhotoSpotEntrance(spot);
+  if (!spot || !entrance?.buildingId) return;
+  const building = state.gameData.buildings[entrance.buildingId];
+  if (building) {
+    building.entrances = normalizeBuildingEntranceRefs(building.entrances).filter((entry) => entry.photoSpotId !== spot.id);
+    building.updatedAt = new Date().toISOString();
+  }
+  delete spot.entranceFor;
+  spot.updatedAt = new Date().toISOString();
+  state.selectedNearbyInteractionKey = `photoSpot:${spot.id}`;
+  state.gameData.selectedPhotoSpotId = spot.id;
+  state.gameData.selectedBuildingId = "";
+  state.gameData.selectedSpotPhotoId = spot.photos[0]?.id || "";
+  state.selectedSpotPhotoForEditId = "";
+  state.selectedBuildingPhotoForEditId = "";
+  updateNearbyGameContext();
+  setGameNotice("入口已取消，保留为拍照点");
+  markGameDirty();
+  renderGamePanel({ force: true });
+  queueDraw();
+}
+
 function saveActivePhotoSpotMeta(options = {}) {
   const spot = getActivePhotoSpot();
   if (!spot) return;
@@ -3351,6 +3615,7 @@ function deleteSelectedBuildingPhoto() {
 function getEntranceLinkCandidate(region) {
   const spot = getNearestPhotoSpotTouchingPlayer();
   if (!region) return { canLink: false, spot: null, reason: "没有可关联对象" };
+  if (!canStructureUseEntrance(region.type || "custom")) return { canLink: false, spot, reason: "门不设置入口" };
   if (!spot) return { canLink: false, spot: null, reason: "需要站在拍照点附近" };
   const existing = getPhotoSpotEntrance(spot);
   if (existing?.buildingId === region.id) return { canLink: false, spot, reason: "这个拍照点已经是入口" };
@@ -3782,6 +4047,7 @@ function markMapInteraction(duration = 140) {
 
 function renderEditorState() {
   const school = getSelectedSchool();
+  els.zoomReadout.hidden = false;
   els.editorToggleButton.disabled = !school || !state.mapImage;
   els.editorToggleButton.textContent = state.editorEnabled ? "退出地图编辑" : "进入地图编辑";
   els.editorPanel.hidden = !state.editorEnabled || !school;
@@ -4449,9 +4715,14 @@ function getCanvasPoint(event) {
   };
 }
 
+function isInsideBuildingView() {
+  return !state.editorEnabled && state.gameData.location.kind === "building";
+}
+
 function onWheel(event) {
   if (!state.mapImage) return;
   event.preventDefault();
+  if (isInsideBuildingView()) return;
   markMapInteraction(180);
   const point = getCanvasPoint(event);
   const factor = event.deltaY < 0 ? 1.12 : 0.88;
@@ -4671,6 +4942,7 @@ function onPointerCancel() {
 }
 
 function startPinchGesture() {
+  if (isInsideBuildingView()) return;
   const points = [...state.pointer.touches.values()].slice(0, 2);
   if (points.length < 2) return;
   state.pointer.mode = "pinch";
@@ -4689,6 +4961,7 @@ function startPinchGesture() {
 }
 
 function updatePinchGesture() {
+  if (isInsideBuildingView()) return;
   const points = [...state.pointer.touches.values()].slice(0, 2);
   if (points.length < 2 || !state.pointer.pinchAnchor) return;
   const currentDistance = Math.max(1, distance(points[0], points[1]));
