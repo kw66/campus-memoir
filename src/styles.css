@@ -404,7 +404,11 @@ button:disabled {
 .exploration-progress {
   min-width: 0;
   width: 100%;
-  padding: 6px 8px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
   border: 1px solid color-mix(in srgb, var(--line-strong), transparent 22%);
   border-radius: 7px;
   background: color-mix(in srgb, var(--panel), transparent 7%);
@@ -415,8 +419,9 @@ button:disabled {
 .exploration-progress-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 4px;
+  white-space: nowrap;
   color: var(--accent-strong);
   font-size: 12px;
   font-weight: 900;
@@ -429,7 +434,7 @@ button:disabled {
 
 .exploration-progress-track {
   height: 6px;
-  margin-top: 5px;
+  min-width: 0;
   overflow: hidden;
   border-radius: 999px;
   background: color-mix(in srgb, var(--line), #fff 54%);
@@ -446,7 +451,7 @@ button:disabled {
 
 .map-actions {
   position: absolute;
-  top: 56px;
+  top: 42px;
   right: 10px;
   z-index: 3;
   display: flex;

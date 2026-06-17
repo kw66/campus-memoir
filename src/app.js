@@ -22,6 +22,7 @@ const MOVE_SLIDE_SAMPLE_RADIUS = 8;
 const MOVE_SLIDE_MIN_DISTANCE = 0.5;
 const MOVE_TARGET_STOP_DISTANCE = 6;
 const MOVE_TARGET_SEARCH_RADIUS = 120;
+const GAME_CLICK_MOVE_TOLERANCE = 14;
 const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
 const PHOTO_SPOT_NAME_PREFIX = "拍照点";
@@ -6099,6 +6100,7 @@ function onPointerDown(event) {
 function onPointerMove(event) {
   const point = getCanvasPoint(event);
   if (!state.editorEnabled) {
+    updateCanvasCursor();
     handleGamePointerMove(event, point);
     return;
   }
@@ -6151,7 +6153,7 @@ function onPointerMove(event) {
 
 function onPointerLeave() {
   if (!state.editorEnabled) {
-    state.gamePointerDown = null;
+    updateCanvasCursor();
     return;
   }
   state.pointer.hovering = false;
@@ -6165,7 +6167,7 @@ function updateCanvasCursor() {
     return;
   }
   if (!state.editorEnabled) {
-    els.mapCanvas.style.cursor = "crosshair";
+    els.mapCanvas.style.cursor = state.gamePointerDown ? "grabbing" : "grab";
     return;
   }
   if (state.pointer.down && state.pointer.mode === "pan") {
@@ -6234,6 +6236,7 @@ function onPointerUp(event) {
 function onPointerCancel() {
   if (!state.editorEnabled) {
     state.gamePointerDown = null;
+    updateCanvasCursor();
     return;
   }
   markMapInteraction(80);
@@ -6304,26 +6307,33 @@ function handleGamePointerDown(event) {
     moved: false
   };
   els.mapCanvas.setPointerCapture?.(event.pointerId);
+  updateCanvasCursor();
 }
 
 function handleGamePointerMove(event, point = getCanvasPoint(event)) {
-  if (!state.gamePointerDown || state.gamePointerDown.pointerId !== event.pointerId) return;
+  if (!state.gamePointerDown || state.gamePointerDown.pointerId !== event.pointerId) {
+    updateCanvasCursor();
+    return;
+  }
   const dx = point.x - state.gamePointerDown.startX;
   const dy = point.y - state.gamePointerDown.startY;
   state.gamePointerDown.lastX = point.x;
   state.gamePointerDown.lastY = point.y;
-  state.gamePointerDown.moved = Math.hypot(dx, dy) > 6;
+  state.gamePointerDown.moved = Math.hypot(dx, dy) > GAME_CLICK_MOVE_TOLERANCE;
+  updateCanvasCursor();
 }
 
 function handleGamePointerUp(event) {
   const pointer = state.gamePointerDown;
   if (!pointer || pointer.pointerId !== event.pointerId) return;
   els.mapCanvas.releasePointerCapture?.(event.pointerId);
+  state.lastGamePointerClickHandledAt = performance.now();
   if (!pointer.moved) {
-    state.lastGamePointerClickHandledAt = performance.now();
-    handleGameCanvasClick(pointer.imagePoint);
+    const point = getCanvasPoint(event);
+    handleGameCanvasClick(clampImagePoint(screenToImage(point.x, point.y)));
   }
   state.gamePointerDown = null;
+  updateCanvasCursor();
   queueDraw();
 }
 
