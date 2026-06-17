@@ -103,46 +103,80 @@ const DEFAULT_GAME_DATA = {
   buildings: {}
 };
 
+const VENUE_TYPES = [
+  "寝室",
+  "实验室",
+  "办公室",
+  "篮球场",
+  "羽毛球场",
+  "网球场",
+  "乒乓球场",
+  "台球场",
+  "溜冰场",
+  "游泳池",
+  "自习室",
+  "食堂窗口",
+  "超市",
+  "足球场",
+  "跑道",
+  "健身房",
+  "教室",
+  "自定义"
+];
+
+const VENUE_TYPE_RULES = {
+  寝室: { personLabel: "舍友", itemLabel: "交通工具" },
+  实验室: { personLabel: "同门", itemLabel: "工位" },
+  办公室: { personLabel: "导师", itemLabel: "物品" },
+  健身房: { personLabel: "老师/同学", itemLabel: "运动器材" },
+  食堂窗口: { personLabel: "老师/同学", itemLabel: "菜" },
+  超市: { personLabel: "老师/同学", itemLabel: "货物" }
+};
+
+const PERSON_TYPES = ["老师", "同学", "舍友", "同门", "导师", "朋友", "恋人", "店员", "自定义"];
+const ITEM_TYPES = ["物品", "交通工具", "运动器材", "菜", "货物", "工位", "项目", "自定义"];
+const DORM_RELATION_TYPES = ["自己的", "朋友的", "恋人的", "同学的", "自定义"];
+
 const BUILDING_CATEGORY_RULES = {
   dormitory: {
     label: "宿舍楼",
-    roomTypes: ["寝室"],
+    roomTypes: VENUE_TYPES,
     personLabel: "舍友",
     itemLabel: "交通工具"
   },
   lab: {
     label: "实验楼",
-    roomTypes: ["实验室", "工位", "导师办公室"],
+    roomTypes: VENUE_TYPES,
     personLabel: "同学/老师",
     itemLabel: "工位"
   },
   canteen: {
     label: "食堂",
-    roomTypes: ["窗口"],
+    roomTypes: VENUE_TYPES,
     personLabel: "联系人",
     itemLabel: "菜品"
   },
   gym: {
     label: "体育馆/健身房",
-    roomTypes: ["篮球场", "羽毛球场", "健身区", "跑步机"],
+    roomTypes: VENUE_TYPES,
     personLabel: "同伴",
     itemLabel: "项目"
   },
   market: {
     label: "超市",
-    roomTypes: ["货架", "收银台"],
+    roomTypes: VENUE_TYPES,
     personLabel: "店员/同学",
     itemLabel: "商品"
   },
   office: {
     label: "导师办公室",
-    roomTypes: ["办公室"],
+    roomTypes: VENUE_TYPES,
     personLabel: "老师",
     itemLabel: "物品"
   },
   other: {
     label: "普通建筑",
-    roomTypes: ["房间"],
+    roomTypes: VENUE_TYPES,
     personLabel: "人物",
     itemLabel: "项目"
   }
@@ -2797,6 +2831,33 @@ function getBuildingRule(memory = null) {
   return BUILDING_CATEGORY_RULES[memory?.category] || BUILDING_CATEGORY_RULES.other;
 }
 
+function getVenueRule(room = null, building = null) {
+  const buildingRule = getBuildingRule(building);
+  const venueType = room?.type || "";
+  return {
+    personLabel: VENUE_TYPE_RULES[venueType]?.personLabel || "老师/同学",
+    itemLabel: VENUE_TYPE_RULES[venueType]?.itemLabel || "物品",
+    venueLabel: venueType || "场地",
+    buildingLabel: buildingRule.label
+  };
+}
+
+function getRoomDisplayName(room) {
+  return room?.name || room?.type || "场地";
+}
+
+function getPersonDisplayName(person) {
+  return person?.name || person?.type || "未命名";
+}
+
+function getItemDisplayName(item, fallback = "物品") {
+  return item?.name || item?.type || fallback;
+}
+
+function renderOptions(values, selectedValue) {
+  return values.map((value) => `<option value="${escapeAttr(value)}" ${value === selectedValue ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
+}
+
 function getPhotoUrl(photo) {
   if (!photo?.resource) return "";
   const key = photo.id || `${photo.resource.name}:${photo.resource.size}:${photo.resource.data?.slice(0, 16)}`;
@@ -3016,19 +3077,24 @@ function renderEntranceListHtml(region, building) {
 function renderInteriorPanelHtml(building, room, item, person) {
   if (state.gameData.location.kind !== "building" || !building) return "";
   const rule = getBuildingRule(building);
-  const roomOptions = rule.roomTypes.map((type) => `<option value="${escapeAttr(type)}">${escapeHtml(type)}</option>`).join("");
+  const venueRule = getVenueRule(room, building);
+  const roomOptions = renderOptions(rule.roomTypes, "自定义");
+  const roomTypeOptions = renderOptions(rule.roomTypes, room?.type || "自定义");
+  const roomRelationOptions = renderOptions(DORM_RELATION_TYPES, room?.relation || "自己的");
+  const itemTypeOptions = renderOptions(ITEM_TYPES, item?.type || venueRule.itemLabel);
+  const personTypeOptions = renderOptions(PERSON_TYPES, person?.type || venueRule.personLabel);
   const rooms = building.rooms.map((item) => `
-    <button class="room-chip${item.id === state.gameData.selectedRoomId ? " active" : ""}" type="button" data-game-action="selectRoom" data-room-id="${escapeAttr(item.id)}">${escapeHtml(item.name || item.type)}</button>
+    <button class="room-chip${item.id === state.gameData.selectedRoomId ? " active" : ""}" type="button" data-game-action="selectRoom" data-room-id="${escapeAttr(item.id)}">进入${escapeHtml(getRoomDisplayName(item))}</button>
   `).join("");
   const roomItems = room?.items?.map((entry) => `
-    <button class="item-chip${entry.id === state.gameData.selectedItemId ? " active" : ""}" type="button" data-game-action="selectItem" data-item-id="${escapeAttr(entry.id)}">${escapeHtml(entry.name || rule.itemLabel)}</button>
+    <button class="item-chip${entry.id === state.gameData.selectedItemId ? " active" : ""}" type="button" data-game-action="selectItem" data-item-id="${escapeAttr(entry.id)}">${escapeHtml(getItemDisplayName(entry, venueRule.itemLabel))}</button>
   `).join("") || "";
   const people = room?.people?.map((item) => `
-    <button class="person-chip${item.id === state.gameData.selectedPersonId ? " active" : ""}" type="button" data-game-action="selectPerson" data-person-id="${escapeAttr(item.id)}">${escapeHtml(item.name || "未命名")}</button>
+    <button class="person-chip${item.id === state.gameData.selectedPersonId ? " active" : ""}" type="button" data-game-action="selectPerson" data-person-id="${escapeAttr(item.id)}">${escapeHtml(getPersonDisplayName(item))}</button>
   `).join("") || "";
   const roomPhoto = room?.photos?.[clamp(room.activePhotoIndex || 0, 0, Math.max(0, (room.photos?.length || 1) - 1))] || null;
   const roomPhotoUrl = roomPhoto ? getPhotoUrl(roomPhoto) : "";
-  const dormPlayerPortraitHtml = building.category === "dormitory" && room ? `
+  const dormPlayerPortraitHtml = room?.type === "寝室" ? `
         <div class="player-portrait-card">
           <span class="player-portrait-status">${state.gameData.player.portrait ? "形象已设置" : "形象未设置"}</span>
           <button class="secondary-button" type="button" data-game-action="uploadPlayerPortrait">设形象</button>
@@ -3046,31 +3112,38 @@ function renderInteriorPanelHtml(building, room, item, person) {
       <div class="room-add-row">
         <input class="game-input" data-game-field="newRoomName" type="text" placeholder="名称">
         <select class="game-input" data-game-field="newRoomType">${roomOptions}</select>
-        <button class="secondary-button" type="button" data-game-action="addRoom">加房间</button>
+        <button class="secondary-button" type="button" data-game-action="addRoom">加场地</button>
       </div>
-      <div class="room-chip-row">${rooms || `<span class="muted-inline">添加房间后管理照片和人物</span>`}</div>
+      <div class="room-chip-row">${rooms || `<span class="muted-inline">添加场地后管理照片、物品和人物</span>`}</div>
       <div class="room-detail" ${room ? "" : "hidden"}>
+        <div class="room-fields">
+          <input class="game-input" data-game-field="roomName" type="text" value="${escapeAttr(room?.name || "")}" placeholder="场地名称">
+          <select class="game-input" data-game-field="roomType">${roomTypeOptions}</select>
+          <select class="game-input" data-game-field="roomRelation" ${room?.type === "寝室" ? "" : "hidden"}>${roomRelationOptions}</select>
+          <button class="secondary-button" type="button" data-game-action="saveRoom">保存</button>
+        </div>
         <div class="mini-photo wide">
-          ${roomPhotoUrl ? `<img src="${roomPhotoUrl}" alt="">` : `<span>房间照片</span>`}
+          ${roomPhotoUrl ? `<img src="${roomPhotoUrl}" alt="">` : `<span>场地照片</span>`}
         </div>
         <div class="game-actions dense">
-          <button class="secondary-button" type="button" data-game-action="uploadRoomPhoto">房间图</button>
+          <button class="secondary-button" type="button" data-game-action="uploadRoomPhoto">场地图</button>
           <button class="secondary-button" type="button" data-game-action="prevRoomPhoto" ${!room || room.photos.length < 2 ? "disabled" : ""}>上一张</button>
           <button class="secondary-button" type="button" data-game-action="nextRoomPhoto" ${!room || room.photos.length < 2 ? "disabled" : ""}>下一张</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteRoomPhoto" ${!room || !room.photos.length ? "disabled" : ""}>删图</button>
-          <button class="secondary-button danger" type="button" data-game-action="deleteRoom">删房间</button>
+          <button class="secondary-button danger" type="button" data-game-action="deleteRoom">删场地</button>
         </div>
         ${dormPlayerPortraitHtml}
         <div class="item-add-row">
-          <input class="game-input" data-game-field="newItemName" type="text" placeholder="${escapeAttr(rule.itemLabel)}">
-          <button class="secondary-button" type="button" data-game-action="addItem">加${escapeHtml(rule.itemLabel)}</button>
+          <input class="game-input" data-game-field="newItemName" type="text" placeholder="${escapeAttr(venueRule.itemLabel)}">
+          <button class="secondary-button" type="button" data-game-action="addItem">加${escapeHtml(venueRule.itemLabel)}</button>
         </div>
-        <div class="item-chip-row">${roomItems || `<span class="muted-inline">添加${escapeHtml(rule.itemLabel)}后可保存照片和备注</span>`}</div>
+        <div class="item-chip-row">${roomItems || `<span class="muted-inline">添加${escapeHtml(venueRule.itemLabel)}后可保存照片和备注</span>`}</div>
         <div class="item-detail" ${item ? "" : "hidden"}>
           <div class="item-top">
             <div class="item-photo">${itemPhotoUrl ? `<img src="${itemPhotoUrl}" alt="">` : `<span>照片</span>`}</div>
             <div class="item-fields">
-              <input class="game-input" data-game-field="itemName" type="text" value="${escapeAttr(item?.name || "")}" placeholder="${escapeAttr(rule.itemLabel)}名称">
+              <input class="game-input" data-game-field="itemName" type="text" value="${escapeAttr(item?.name || "")}" placeholder="${escapeAttr(venueRule.itemLabel)}名称">
+              <select class="game-input" data-game-field="itemType">${itemTypeOptions}</select>
               <textarea class="game-input" data-game-field="itemDescription" placeholder="备注">${escapeHtml(item?.description || "")}</textarea>
             </div>
           </div>
@@ -3079,13 +3152,14 @@ function renderInteriorPanelHtml(building, room, item, person) {
             <button class="secondary-button" type="button" data-game-action="prevItemPhoto" ${!item || item.photos.length < 2 ? "disabled" : ""}>上一张</button>
             <button class="secondary-button" type="button" data-game-action="nextItemPhoto" ${!item || item.photos.length < 2 ? "disabled" : ""}>下一张</button>
             <button class="secondary-button" type="button" data-game-action="saveItem">保存</button>
+            <button class="secondary-button" type="button" data-game-action="interactItem">互动</button>
             <button class="secondary-button danger" type="button" data-game-action="deleteItemPhoto" ${!item || !item.photos.length ? "disabled" : ""}>删图</button>
             <button class="secondary-button danger" type="button" data-game-action="deleteItem">删除</button>
           </div>
         </div>
         <div class="person-add-row">
-          <input class="game-input" data-game-field="newPersonName" type="text" placeholder="${escapeAttr(rule.personLabel)}">
-          <button class="secondary-button" type="button" data-game-action="addPerson">加人物</button>
+          <input class="game-input" data-game-field="newPersonName" type="text" placeholder="${escapeAttr(venueRule.personLabel)}">
+          <button class="secondary-button" type="button" data-game-action="addPerson">加${escapeHtml(venueRule.personLabel)}</button>
         </div>
         <div class="person-chip-row">${people}</div>
         <div class="person-detail" ${person ? "" : "hidden"}>
@@ -3093,6 +3167,7 @@ function renderInteriorPanelHtml(building, room, item, person) {
             <div class="person-photo">${personPhotoUrl ? `<img src="${personPhotoUrl}" alt="">` : `<span>照片</span>`}</div>
             <div class="person-fields">
               <input class="game-input" data-game-field="personName" type="text" value="${escapeAttr(person?.name || "")}" placeholder="姓名">
+              <select class="game-input" data-game-field="personType">${personTypeOptions}</select>
               <textarea class="game-input" data-game-field="personDescription" placeholder="背景资料">${escapeHtml(person?.description || "")}</textarea>
             </div>
           </div>
@@ -3132,10 +3207,27 @@ function onGamePanelInput(event) {
     saveSelectedBuildingMeta({ defer: true, silent: true });
   } else if (name === "photoSpotName" || name === "photoSpotDate") {
     saveActivePhotoSpotMeta({ defer: true, silent: true });
+  } else if (name === "roomName") {
+    saveSelectedRoom({ defer: true, silent: true });
+  } else if (name === "itemName" || name === "itemDescription") {
+    saveSelectedItem({ defer: true, silent: true });
+  } else if (name === "personName" || name === "personDescription") {
+    saveSelectedPerson({ defer: true, silent: true });
   }
 }
 
-function onGamePanelChange() {}
+function onGamePanelChange(event) {
+  const field = event.target.closest("[data-game-field]");
+  if (!field) return;
+  const name = field.dataset.gameField;
+  if (name === "roomType" || name === "roomRelation") {
+    saveSelectedRoom();
+  } else if (name === "itemType") {
+    saveSelectedItem();
+  } else if (name === "personType") {
+    saveSelectedPerson();
+  }
+}
 
 function handleGameAction(action, button) {
   switch (action) {
@@ -3193,11 +3285,14 @@ function handleGameAction(action, button) {
     case "selectRoom":
       selectRoom(button.dataset.roomId || "");
       return;
+    case "saveRoom":
+      saveSelectedRoom();
+      return;
     case "uploadRoomPhoto":
       els.roomPhotoInput.click();
       return;
     case "uploadPlayerPortrait":
-      if (getSelectedBuildingMemory()?.category !== "dormitory" || !getSelectedRoom()) {
+      if (getSelectedRoom()?.type !== "寝室") {
         setGameNotice("请先进入寝室");
         return;
       }
@@ -3232,6 +3327,9 @@ function handleGameAction(action, button) {
       return;
     case "saveItem":
       saveSelectedItem();
+      return;
+    case "interactItem":
+      interactWithSelectedItem();
       return;
     case "deleteItemPhoto":
       deleteSelectedItemPhoto();
@@ -3727,7 +3825,7 @@ function addRoomToSelectedBuilding() {
   const building = getSelectedBuildingMemory();
   if (!building) return;
   const name = els.gamePanel.querySelector('[data-game-field="newRoomName"]')?.value?.trim() || "";
-  const type = els.gamePanel.querySelector('[data-game-field="newRoomType"]')?.value || getBuildingRule(building).roomTypes[0] || "房间";
+  const type = els.gamePanel.querySelector('[data-game-field="newRoomType"]')?.value || getBuildingRule(building).roomTypes[0] || "自定义";
   const room = normalizeRoom({
     id: createId("room"),
     name: name || type,
@@ -3754,6 +3852,21 @@ function selectRoom(roomId) {
   state.gameData.selectedPersonId = "";
   markGameDirty({ defer: true });
   renderGamePanel({ force: true });
+  queueDraw();
+}
+
+function saveSelectedRoom(options = {}) {
+  const room = getSelectedRoom();
+  if (!room) return;
+  const name = els.gamePanel.querySelector('[data-game-field="roomName"]')?.value?.trim() || "";
+  const type = els.gamePanel.querySelector('[data-game-field="roomType"]')?.value || room.type || "自定义";
+  const relation = els.gamePanel.querySelector('[data-game-field="roomRelation"]')?.value || room.relation || "自己的";
+  room.name = name || type;
+  room.type = type;
+  room.relation = type === "寝室" ? relation : "";
+  room.updatedAt = new Date().toISOString();
+  markGameDirty(options.defer ? { defer: true } : {});
+  if (!options.silent) renderGamePanel({ force: true });
   queueDraw();
 }
 
@@ -3807,11 +3920,12 @@ function addItemToSelectedRoom() {
   const room = getSelectedRoom();
   if (!room) return;
   const building = getSelectedBuildingMemory();
-  const rule = getBuildingRule(building);
+  const rule = getVenueRule(room, building);
   const name = els.gamePanel.querySelector('[data-game-field="newItemName"]')?.value?.trim() || "";
   const item = normalizeMemoryItem({
     id: createId("item"),
     name: name || rule.itemLabel,
+    type: rule.itemLabel,
     createdAt: new Date().toISOString()
   });
   room.items.push(item);
@@ -3848,14 +3962,15 @@ function cycleItemPhoto(delta) {
   renderGamePanel({ force: true });
 }
 
-function saveSelectedItem() {
+function saveSelectedItem(options = {}) {
   const item = getSelectedItem();
   if (!item) return;
   item.name = els.gamePanel.querySelector('[data-game-field="itemName"]')?.value?.trim() || item.name;
+  item.type = els.gamePanel.querySelector('[data-game-field="itemType"]')?.value || item.type || "物品";
   item.description = els.gamePanel.querySelector('[data-game-field="itemDescription"]')?.value?.trim() || "";
   item.updatedAt = new Date().toISOString();
-  markGameDirty();
-  renderGamePanel({ force: true });
+  markGameDirty(options.defer ? { defer: true } : {});
+  if (!options.silent) renderGamePanel({ force: true });
 }
 
 function deleteSelectedItemPhoto() {
@@ -3880,13 +3995,32 @@ function deleteSelectedItem() {
   renderGamePanel({ force: true });
 }
 
+function interactWithSelectedItem() {
+  const item = getSelectedItem();
+  if (!item) return;
+  const name = getItemDisplayName(item, item.type || "物品");
+  const type = item.type || "物品";
+  const verbs = {
+    交通工具: "查看这辆交通工具",
+    运动器材: "使用这件运动器材",
+    菜: "点一份菜",
+    货物: "拿起这件货物",
+    工位: "坐到这个工位"
+  };
+  setGameNotice(`${verbs[type] || "查看"}：${name}`);
+  renderGamePanel({ force: true });
+}
+
 function addPersonToSelectedRoom() {
   const room = getSelectedRoom();
   if (!room) return;
+  const building = getSelectedBuildingMemory();
+  const rule = getVenueRule(room, building);
   const name = els.gamePanel.querySelector('[data-game-field="newPersonName"]')?.value?.trim() || "";
   const person = normalizePerson({
     id: createId("person"),
-    name,
+    name: name || rule.personLabel,
+    type: rule.personLabel,
     createdAt: new Date().toISOString()
   });
   room.people.push(person);
@@ -3917,7 +4051,7 @@ async function setSelectedPersonPhoto(file) {
 async function setPlayerPortraitFromDorm(file) {
   const building = getSelectedBuildingMemory();
   const room = getSelectedRoom();
-  if (!building || !room || building.category !== "dormitory") {
+  if (!building || !room || room.type !== "寝室") {
     setGameNotice("请先在寝室里配置");
     return;
   }
@@ -3929,14 +4063,15 @@ async function setPlayerPortraitFromDorm(file) {
   queueDraw();
 }
 
-function saveSelectedPerson() {
+function saveSelectedPerson(options = {}) {
   const person = getSelectedPerson();
   if (!person) return;
   person.name = els.gamePanel.querySelector('[data-game-field="personName"]')?.value?.trim() || person.name;
+  person.type = els.gamePanel.querySelector('[data-game-field="personType"]')?.value || person.type || "同学";
   person.description = els.gamePanel.querySelector('[data-game-field="personDescription"]')?.value?.trim() || "";
   person.updatedAt = new Date().toISOString();
-  markGameDirty();
-  renderGamePanel({ force: true });
+  markGameDirty(options.defer ? { defer: true } : {});
+  if (!options.silent) renderGamePanel({ force: true });
 }
 
 function sayHelloToSelectedPerson() {
@@ -6747,10 +6882,10 @@ function drawInteriorScene(ctx) {
     ctx.stroke();
     ctx.fillStyle = "#1d2a24";
     ctx.font = "800 14px Microsoft YaHei, sans-serif";
-    ctx.fillText(room.name || room.type || "房间", x + 12, y + 28, cardW - 24);
+    ctx.fillText(getRoomDisplayName(room), x + 12, y + 28, cardW - 24);
     ctx.fillStyle = "#667064";
     ctx.font = "700 12px Microsoft YaHei, sans-serif";
-    ctx.fillText(`${room.people.length} 人  ${room.photos.length} 图`, x + 12, y + 54, cardW - 24);
+    ctx.fillText(`${room.type || "场地"}  ${room.people.length} 人  ${room.photos.length} 图`, x + 12, y + 54, cardW - 24);
   });
   ctx.restore();
 }
@@ -7702,10 +7837,12 @@ function migrateLegacyEntrancesToPhotoSpots(gameData) {
 
 function normalizeRoom(source) {
   if (!source || typeof source !== "object") return null;
+  const type = typeof source.type === "string" ? source.type : "自定义";
   return {
     id: typeof source.id === "string" ? source.id : createId("room"),
     name: typeof source.name === "string" ? source.name : "",
-    type: typeof source.type === "string" ? source.type : "房间",
+    type,
+    relation: type === "寝室" && typeof source.relation === "string" ? source.relation : "",
     photos: Array.isArray(source.photos) ? source.photos.map(normalizePhotoRecord).filter(Boolean) : [],
     activePhotoIndex: Number.isFinite(Number(source.activePhotoIndex)) ? Math.max(0, Math.floor(Number(source.activePhotoIndex))) : 0,
     people: Array.isArray(source.people) ? source.people.map(normalizePerson).filter(Boolean) : [],
@@ -7720,6 +7857,7 @@ function normalizePerson(source) {
   return {
     id: typeof source.id === "string" ? source.id : createId("person"),
     name: typeof source.name === "string" ? source.name : "",
+    type: typeof source.type === "string" ? source.type : "同学",
     description: typeof source.description === "string" ? source.description : "",
     photo: normalizePhotoRecord(source.photo) || null,
     chat: Array.isArray(source.chat) ? source.chat.map(normalizeChatMessage).filter(Boolean) : [],
@@ -7733,6 +7871,7 @@ function normalizeMemoryItem(source) {
   return {
     id: typeof source.id === "string" ? source.id : createId("item"),
     name: typeof source.name === "string" ? source.name : "",
+    type: typeof source.type === "string" ? source.type : "物品",
     description: typeof source.description === "string" ? source.description : "",
     photos: Array.isArray(source.photos) ? source.photos.map(normalizePhotoRecord).filter(Boolean) : [],
     activePhotoIndex: Number.isFinite(Number(source.activePhotoIndex)) ? Math.max(0, Math.floor(Number(source.activePhotoIndex))) : 0,
@@ -8680,6 +8819,7 @@ function getGameTextState() {
   const room = getSelectedRoom();
   const item = getSelectedItem();
   const person = getSelectedPerson();
+  const venueRule = getVenueRule(room, building);
   return {
     mode: state.editorEnabled ? "editor" : state.gameData.location.kind,
     coordinateSystem: "map image pixels, origin top-left, x right, y down",
@@ -8714,12 +8854,16 @@ function getGameTextState() {
       selectedPhotoId: state.gameData.selectedBuildingPhotoId || "",
       selectedPhotoForEditId: state.selectedBuildingPhotoForEditId || "",
       entranceCount: building.entrances.length,
-      roomCount: building.rooms.length
+      roomCount: building.rooms.length,
+      venueCount: building.rooms.length
     } : null,
     selectedRoom: room ? {
       id: room.id,
       name: room.name,
       type: room.type,
+      venueLabel: getRoomDisplayName(room),
+      itemLabel: venueRule.itemLabel,
+      personLabel: venueRule.personLabel,
       photoCount: room.photos.length,
       itemCount: room.items.length,
       personCount: room.people.length

@@ -567,6 +567,7 @@ button:disabled {
 }
 
 .building-editor,
+.room-fields,
 .room-detail,
 .item-detail,
 .person-detail {
@@ -654,6 +655,14 @@ textarea.game-input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) auto;
   gap: 7px;
+}
+
+.room-fields {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.room-fields > .game-input:first-child {
+  grid-column: 1 / -1;
 }
 
 .item-add-row,
@@ -1534,7 +1543,8 @@ textarea.game-input {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .room-add-row {
+  .room-add-row,
+  .room-fields {
     grid-template-columns: 1fr;
   }
 
