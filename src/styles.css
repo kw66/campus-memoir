@@ -217,6 +217,19 @@ button:disabled {
   font-weight: 900;
 }
 
+.project-card a {
+  text-decoration: none;
+}
+
+.project-card a span {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.project-card a em {
+  text-decoration: none;
+}
+
 .game-info-card em {
   margin-left: 4px;
   color: var(--text);
