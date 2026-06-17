@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>校园回忆录</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./src/styles.css?v=20260617j" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260618a" />
   </head>
   <body>
     <div class="app-shell">
@@ -364,6 +364,10 @@
             </div>
 
             <div class="form-note" id="formNote">必填：名称、大图。</div>
+            <div class="download-progress import-progress" id="importProgress" hidden>
+              <div class="download-progress-track" aria-hidden="true"><span id="importProgressFill"></span></div>
+              <span class="download-progress-text" id="importProgressText"></span>
+            </div>
             <div class="form-footer">
               <button class="primary-button" id="createSchoolButton" type="submit">创建并进入</button>
               <button class="secondary-button" id="saveSchoolButton" type="button">保存</button>
@@ -377,6 +381,6 @@
       </form>
     </dialog>
 
-    <script src="./src/app.js?v=20260617j"></script>
+    <script src="./src/app.js?v=20260618a"></script>
   </body>
 </html>

@@ -1712,6 +1712,49 @@ textarea.game-input {
   font-size: 12px;
 }
 
+.download-progress {
+  display: grid;
+  gap: 4px;
+  padding-top: 4px;
+}
+
+.download-progress[hidden] {
+  display: none;
+}
+
+.download-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line), transparent 18%);
+}
+
+.download-progress-track span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.18s ease-out;
+}
+
+.download-progress-text {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
+.download-copy .download-progress-text {
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
 .download-actions {
   display: flex;
   align-items: center;
@@ -2006,11 +2049,19 @@ textarea.game-input {
   }
 
   .download-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     justify-content: stretch;
   }
 
   .download-actions .secondary-button {
-    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 6px;
+  }
+
+  .download-progress-text {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .form-footer {

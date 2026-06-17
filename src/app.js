@@ -399,6 +399,7 @@ const state = {
   explorationDirty: true,
   globalStats: { totalPv: 0, todayPv: 0, totalUv: 0, todayUv: 0 },
   globalStatsStatus: "正在读取校园足迹...",
+  downloadJobs: new Map(),
   album: {
     supported: typeof window.showDirectoryPicker === "function",
     handle: null,
@@ -540,6 +541,9 @@ const els = {
   createSchoolButton: document.querySelector("#createSchoolButton"),
   saveSchoolButton: document.querySelector("#saveSchoolButton"),
   formNote: document.querySelector("#formNote"),
+  importProgress: document.querySelector("#importProgress"),
+  importProgressFill: document.querySelector("#importProgressFill"),
+  importProgressText: document.querySelector("#importProgressText"),
   mapFrame: document.querySelector("#mapFrame"),
   mapCanvas: document.querySelector("#mapCanvas"),
   mapEmpty: document.querySelector("#mapEmpty"),
@@ -1307,10 +1311,22 @@ async function importResourceFiles(files) {
   if (!files.length) return;
   setBulkBusy(true);
   clearFormNote();
+  setImportProgress({
+    status: "running",
+    message: files.length > 1 ? `准备导入 ${files.length} 个文件...` : `准备导入 ${files[0].name || "文件"}...`,
+    loaded: 0,
+    total: files.reduce((sum, file) => sum + (file.size || 0), 0),
+    percent: 0
+  });
   try {
     const zipFiles = files.filter((file) => isZipFile(file));
     if (zipFiles.length) {
       setFormError("zip 导入接口已预留，当前先使用 JSON 包或图片文件。");
+      setImportProgress({
+        status: "error",
+        message: "zip 导入暂未启用，请选择 JSON 整校包或图片。",
+        percent: 0
+      });
       return;
     }
 
@@ -1325,8 +1341,18 @@ async function importResourceFiles(files) {
     }
     renderSchoolList();
     renderSchoolDialogPanels();
+    setImportProgress({
+      status: "done",
+      message: "导入完成。",
+      percent: 100
+    });
   } catch (error) {
     console.error(error);
+    setImportProgress({
+      status: "error",
+      message: "导入失败，请检查文件格式。",
+      percent: 0
+    });
     setFormError("导入失败，请检查文件格式。");
   } finally {
     setBulkBusy(false);
@@ -1334,11 +1360,32 @@ async function importResourceFiles(files) {
 }
 
 async function importJsonResourceFile(file) {
-  const data = await readOptionalJsonFile(file);
+  const text = await readTextFileWithProgress(file, (progress) => {
+    setImportProgress({
+      status: "running",
+      message: `正在读取 ${file.name || "JSON 文件"}...`,
+      loaded: progress.loaded,
+      total: progress.total,
+      percent: progress.percent
+    });
+  });
+  setImportProgress({
+    status: "running",
+    message: `正在解析 ${file.name || "JSON 文件"}...`,
+    loaded: file.size || 0,
+    total: file.size || 0,
+    percent: 70
+  });
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const data = JSON.parse(text);
   const kind = detectJsonResourceKind(data);
 
   if (kind === "school") {
-    await importSchoolPackageFile(file, { stayInDialog: true, parsedData: data });
+    await importSchoolPackageFile(file, {
+      stayInDialog: true,
+      parsedData: data,
+      onProgress: setImportProgress
+    });
     return;
   }
   if (kind === "extraImages") {
@@ -1494,21 +1541,149 @@ async function downloadOfficialPackage(item) {
     setFormError("暂未配置下载地址。");
     return;
   }
+  clearFormNote();
+  const job = setDownloadJob(item.id, {
+    status: "running",
+    message: "正在连接...",
+    loaded: 0,
+    total: 0,
+    percent: 0
+  });
+  els.formNote.textContent = `正在下载 ${item.name}...`;
+  els.formNote.classList.remove("error");
   setBulkBusy(true);
   try {
     const response = await fetch(item.packageUrl);
     if (!response.ok) throw new Error(`download failed: ${response.status}`);
-    const blob = await response.blob();
+    const blob = await readResponseBlobWithProgress(response, item.id);
+    setDownloadJob(item.id, {
+      ...job,
+      status: "running",
+      message: "正在解析并导入...",
+      loaded: blob.size,
+      total: blob.size,
+      percent: 100
+    });
     const file = new File([blob], `${safeFileName(item.name)}.campus-memoir.json`, {
       type: blob.type || "application/json"
     });
-    await importSchoolPackageFile(file, { stayInDialog: true });
+    const importedSchool = await importSchoolPackageFile(file, { stayInDialog: true, keepDownloadPanel: true });
+    const schoolName = importedSchool?.name || state.schools.find((school) => school.id === state.dialogSelection.schoolId)?.name || item.name;
+    setDownloadJob(item.id, {
+      status: "done",
+      message: `已导入：${schoolName}`,
+      loaded: blob.size,
+      total: blob.size,
+      percent: 100
+    });
+    els.formNote.textContent = `已导入 ${schoolName}。`;
+    els.formNote.classList.remove("error");
   } catch (error) {
-    console.error(error);
-    setFormError("自动导入失败，可点手动下载后再用导入。");
+    console.warn(error);
+    const errorMessage = getDownloadFailureMessage(error);
+    setDownloadJob(item.id, {
+      status: "error",
+      message: errorMessage,
+      loaded: 0,
+      total: 0,
+      percent: 0
+    });
+    setFormError(errorMessage);
   } finally {
     setBulkBusy(false);
   }
+}
+
+function getDownloadFailureMessage(error) {
+  const text = String(error?.message || error || "");
+  if (/Failed to fetch|Load failed|NetworkError/i.test(text)) {
+    return "浏览器无法直接读取 GitHub Release，请点手动下载后再用导入。";
+  }
+  return "自动导入失败，请点手动下载后再用导入。";
+}
+
+async function readResponseBlobWithProgress(response, itemId) {
+  const total = Number(response.headers.get("Content-Length")) || 0;
+  const contentType = response.headers.get("Content-Type") || "application/json";
+  const reader = response.body?.getReader ? response.body.getReader() : null;
+  if (!reader) {
+    setDownloadJob(itemId, {
+      status: "running",
+      message: "正在下载...",
+      loaded: 0,
+      total,
+      percent: 0
+    });
+    return response.blob();
+  }
+
+  const chunks = [];
+  let loaded = 0;
+  setDownloadJob(itemId, {
+    status: "running",
+    message: total ? `正在下载 0%` : "正在下载 0 MB",
+    loaded,
+    total,
+    percent: 0
+  });
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    chunks.push(value);
+    loaded += value.byteLength || value.length || 0;
+    const percent = total ? clamp(loaded / total * 100, 0, 99.5) : 0;
+    setDownloadJob(itemId, {
+      status: "running",
+      message: total ? `正在下载 ${Math.floor(percent)}%` : `正在下载 ${formatBytes(loaded)}`,
+      loaded,
+      total,
+      percent
+    });
+  }
+
+  return new Blob(chunks, { type: contentType });
+}
+
+function setDownloadJob(itemId, next) {
+  const previous = state.downloadJobs.get(itemId) || {};
+  const job = { ...previous, ...next, updatedAt: Date.now() };
+  state.downloadJobs.set(itemId, job);
+  renderDownloadJob(itemId);
+  return job;
+}
+
+function getDownloadJob(itemId) {
+  return state.downloadJobs.get(itemId) || null;
+}
+
+function setImportProgress(job = null) {
+  if (!els.importProgress || !els.importProgressFill || !els.importProgressText) return;
+  if (!job) {
+    els.importProgress.hidden = true;
+    els.importProgressFill.style.width = "0%";
+    els.importProgressText.textContent = "";
+    return;
+  }
+  const percent = clamp(Number(job.percent) || 0, 0, 100);
+  els.importProgress.hidden = false;
+  els.importProgress.dataset.status = job.status || "running";
+  els.importProgressFill.style.width = `${percent.toFixed(1)}%`;
+  const detail = job.total
+    ? `${formatBytes(job.loaded || 0)} / ${formatBytes(job.total || 0)}`
+    : job.loaded ? formatBytes(job.loaded) : "";
+  els.importProgressText.textContent = detail
+    ? `${job.message || "正在处理..."} · ${detail}`
+    : job.message || "正在处理...";
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${Math.max(0, Math.round(value))} B`;
 }
 
 function openOfficialPackageDownload(item) {
@@ -1525,10 +1700,38 @@ async function readOptionalStructureFile(file) {
   return normalizeEditData(extractStructureResource(parsed).editData);
 }
 
-async function readOptionalJsonFile(file) {
+async function readOptionalJsonFile(file, options = {}) {
   if (!file) return null;
-  const text = await file.text();
+  const text = options.onProgress
+    ? await readTextFileWithProgress(file, options.onProgress)
+    : await file.text();
   return JSON.parse(text);
+}
+
+function readTextFileWithProgress(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    const total = file.size || 0;
+    reader.onprogress = (event) => {
+      const loaded = event.loaded || 0;
+      const eventTotal = event.lengthComputable ? event.total : total;
+      onProgress({
+        loaded,
+        total: eventTotal,
+        percent: eventTotal ? clamp(loaded / eventTotal * 65, 0, 65) : 0
+      });
+    };
+    reader.onload = () => {
+      onProgress({
+        loaded: total,
+        total,
+        percent: 65
+      });
+      resolve(String(reader.result || ""));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
 }
 
 function extractStructureResource(data) {
@@ -1875,6 +2078,7 @@ function renderSchoolDialogPanels() {
   els.campusFormPanel.hidden = isDownload;
   els.downloadPanel.hidden = !isDownload;
   if (isDownload) {
+    setImportProgress(null);
     renderDownloadCatalog();
     return;
   }
@@ -1968,8 +2172,11 @@ function syncResourceSelectionState({ isNew, school, hasStructure }) {
 function renderDownloadCatalog() {
   els.downloadList.innerHTML = "";
   for (const item of OFFICIAL_CATALOG) {
+    const job = getDownloadJob(item.id);
+    const busy = job?.status === "running";
     const row = document.createElement("article");
     row.className = "download-item";
+    row.dataset.downloadId = item.id;
 
     const text = document.createElement("div");
     text.className = "download-copy";
@@ -1979,7 +2186,14 @@ function renderDownloadCatalog() {
     meta.textContent = `GitHub Release 官方包 · ${item.version || "最新"} · ${item.sizeLabel || "文件大小未知"}`;
     const desc = document.createElement("span");
     desc.textContent = item.description || "点击后下载并导入到本地浏览器。";
-    text.append(title, meta, desc);
+    const progress = document.createElement("div");
+    progress.className = "download-progress";
+    progress.hidden = !job;
+    progress.innerHTML = `
+      <div class="download-progress-track" aria-hidden="true"><span style="width:${clamp(Number(job?.percent) || 0, 0, 100).toFixed(1)}%"></span></div>
+      <span class="download-progress-text">${escapeHtml(getDownloadJobText(job))}</span>
+    `;
+    text.append(title, meta, desc, progress);
 
     const actions = document.createElement("div");
     actions.className = "download-actions";
@@ -1987,7 +2201,8 @@ function renderDownloadCatalog() {
     const button = document.createElement("button");
     button.className = "secondary-button";
     button.type = "button";
-    button.textContent = "下载并导入";
+    button.textContent = busy ? "下载中..." : job?.status === "done" ? "重新导入" : "下载并导入";
+    button.disabled = busy;
     button.addEventListener("click", () => {
       void downloadOfficialPackage(item);
     });
@@ -1997,6 +2212,7 @@ function renderDownloadCatalog() {
     fallback.type = "button";
     fallback.textContent = "手动下载";
     fallback.title = "打开 GitHub Release 下载链接";
+    fallback.disabled = busy;
     fallback.addEventListener("click", () => {
       openOfficialPackageDownload(item);
     });
@@ -2005,6 +2221,39 @@ function renderDownloadCatalog() {
     row.append(text, actions);
     els.downloadList.append(row);
   }
+}
+
+function renderDownloadJob(itemId) {
+  const item = OFFICIAL_CATALOG.find((entry) => entry.id === itemId);
+  if (!item) return;
+  const row = [...els.downloadList.querySelectorAll(".download-item")]
+    .find((element) => element.dataset.downloadId === itemId);
+  if (!row) {
+    renderDownloadCatalog();
+    return;
+  }
+  const job = getDownloadJob(itemId);
+  const busy = job?.status === "running";
+  const progress = row.querySelector(".download-progress");
+  const fill = row.querySelector(".download-progress-track span");
+  const text = row.querySelector(".download-progress-text");
+  const buttons = row.querySelectorAll("button");
+  if (progress) progress.hidden = !job;
+  if (fill) fill.style.width = `${clamp(Number(job?.percent) || 0, 0, 100).toFixed(1)}%`;
+  if (text) text.textContent = getDownloadJobText(job);
+  if (buttons[0]) {
+    buttons[0].disabled = busy;
+    buttons[0].textContent = busy ? "下载中..." : job?.status === "done" ? "重新导入" : "下载并导入";
+  }
+  if (buttons[1]) buttons[1].disabled = busy;
+}
+
+function getDownloadJobText(job) {
+  if (!job) return "";
+  const detail = job.total
+    ? `${formatBytes(job.loaded || 0)} / ${formatBytes(job.total || 0)}`
+    : job.loaded ? formatBytes(job.loaded) : "";
+  return detail ? `${job.message || "正在处理..."} · ${detail}` : job.message || "正在处理...";
 }
 
 function getSelectedResourceKeys() {
@@ -9378,6 +9627,9 @@ function setBulkBusy(isBusy) {
   els.bulkExportButton.disabled = isBusy || !getSelectedResourceKeys().length;
   els.bulkDeleteButton.disabled = isBusy || !getSelectedResourceKeys().length;
   els.bulkImportButton.textContent = isBusy ? "处理中..." : "导入";
+  if (state.dialogSelection.mode === "download") {
+    for (const item of OFFICIAL_CATALOG) renderDownloadJob(item.id);
+  }
 }
 
 function setFormError(message) {
@@ -10000,6 +10252,18 @@ async function importSchoolPackageFile(file, options = {}) {
     chooseNewSchoolPanel();
     return;
   }
+  const report = typeof options.onProgress === "function" ? options.onProgress : null;
+  const reportImport = (message, percent) => {
+    if (!report) return;
+    report({
+      status: "running",
+      message,
+      loaded: file?.size || 0,
+      total: file?.size || 0,
+      percent
+    });
+  };
+  reportImport("正在准备整校包...", 72);
   const id = createId("school");
   const school = {
     id,
@@ -10013,8 +10277,10 @@ async function importSchoolPackageFile(file, options = {}) {
     createdAt: data.school?.createdAt || new Date().toISOString()
   };
   if (data.mapImage) {
+    reportImport("正在写入大地图图片...", 78);
     await putMapImageRecord(id, data.mapImage);
     if (!school.mapMeta) {
+      reportImport("正在读取地图尺寸...", 84);
       const blob = resourceRecordToBlob(data.mapImage);
       if (blob) {
         const mapFile = new File([blob], school.mapImageName || data.mapImage.name || "map-image", { type: blob.type || data.mapImage.type || "application/octet-stream" });
@@ -10022,23 +10288,30 @@ async function importSchoolPackageFile(file, options = {}) {
       }
     }
   }
+  reportImport("正在写入地图结构...", 88);
   await putEditData(id, normalizeEditData(extractStructureResource(data.editData).editData));
+  reportImport("正在写入游戏数据...", 91);
   await putGameData(id, normalizeGameData(data.gameData));
+  reportImport("正在写入人物关系...", 94);
   await putPeopleData(id, data.peopleData || null);
+  reportImport("正在写入附属图片...", 97);
   await putExtraImages(id, Array.isArray(data.extraImages) ? data.extraImages : []);
   state.schools.push(school);
   saveSchools();
-  state.dialogSelection = { mode: "manage", schoolId: id };
+  if (!options.keepDownloadPanel) state.dialogSelection = { mode: "manage", schoolId: id };
   if (options.stayInDialog) {
     renderSchoolList();
     renderSchoolDialogPanels();
     if (state.selectedSchoolId === id) await renderAll({ fit: true });
-    return;
+    if (report) report({ status: "done", message: `已导入 ${school.name}。`, percent: 100 });
+    return school;
   }
   state.selectedSchoolId = id;
   saveCurrentSchoolId(id);
   els.schoolDialog.close();
   await renderAll({ fit: true });
+  if (report) report({ status: "done", message: `已导入 ${school.name}。`, percent: 100 });
+  return school;
 }
 
 async function filesToResourceRecords(files) {
