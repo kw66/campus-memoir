@@ -20,6 +20,8 @@ const DEFAULT_WALK_SPEED = 320;
 const WALK_SPEED_FACTOR = 0.75;
 const MOVE_SLIDE_SAMPLE_RADIUS = 8;
 const MOVE_SLIDE_MIN_DISTANCE = 0.5;
+const MOVE_TARGET_STOP_DISTANCE = 6;
+const MOVE_TARGET_SEARCH_RADIUS = 120;
 const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
 const PHOTO_SPOT_NAME_PREFIX = "拍照点";
@@ -105,7 +107,8 @@ const DEFAULT_GAME_DATA = {
   settings: {
     showPhotoMarkers: true,
     showInteractionMarkers: true,
-    showPeopleMarkers: true
+    showPeopleMarkers: true,
+    showExplorationGrid: false
   },
   location: {
     kind: "campus",
@@ -393,6 +396,7 @@ const state = {
   gamePanelKey: "",
   gameNotice: "",
   explorationCache: null,
+  explorationDirty: true,
   globalStats: { totalPv: 0, todayPv: 0, totalUv: 0, todayUv: 0 },
   globalStatsStatus: "正在读取校园足迹...",
   album: {
@@ -407,10 +411,10 @@ const state = {
   photoUrlCache: new Map(),
   photoImageCache: new Map(),
   movementKeys: new Set(),
+  moveTarget: null,
   lastGameFrameTime: 0,
   gameLoopRunning: false,
   gameSaveTimer: null,
-  touchMoveVector: { x: 0, y: 0, active: false },
   activeGameFileTarget: "",
   currentNearbyPhotoSpotId: "",
   currentNearbyInteractionTargets: [],
@@ -420,6 +424,7 @@ const state = {
   selectedSpotPhotoForEditId: "",
   selectedBuildingPhotoForEditId: "",
   gamePointerDown: null,
+  lastGamePointerClickHandledAt: 0,
   editorEnabled: false,
   editorNotice: "",
   editorNoticeTone: "info",
@@ -484,6 +489,7 @@ const state = {
   structureListPage: 0,
   interactionPreviewCanvas: document.createElement("canvas"),
   mapAlphaSampleCanvas: document.createElement("canvas"),
+  mapAlphaPixelCache: new Map(),
   interactionPreviewScale: 1,
   interactionFastUntil: 0,
   interactionIdleTimer: null,
@@ -509,6 +515,7 @@ const els = {
   explorationProgress: document.querySelector("#explorationProgress"),
   explorationProgressText: document.querySelector("#explorationProgressText"),
   explorationProgressFill: document.querySelector("#explorationProgressFill"),
+  mapToolbar: document.querySelector("#mapToolbar"),
   editorToggleButton: document.querySelector("#editorToggleButton"),
   zoomReadout: document.querySelector("#zoomReadout"),
   schoolDialog: document.querySelector("#schoolDialog"),
@@ -541,6 +548,7 @@ const els = {
   mapPhotoMarkersToggle: document.querySelector("#mapPhotoMarkersToggle"),
   mapInteractionMarkersToggle: document.querySelector("#mapInteractionMarkersToggle"),
   mapPeopleMarkersToggle: document.querySelector("#mapPeopleMarkersToggle"),
+  mapExplorationGridToggle: document.querySelector("#mapExplorationGridToggle"),
   panelHeader: document.querySelector("#panelHeader"),
   panelKicker: document.querySelector("#panelKicker"),
   infoTitle: document.querySelector("#infoTitle"),
@@ -706,6 +714,9 @@ async function init() {
       updateNearbyGameContext,
       followPlayer,
       renderGamePanel,
+      setMoveTargetFromClick,
+      findMoveTargetNear,
+      screenToImage,
       queueDraw
     };
   }
@@ -834,6 +845,12 @@ function bindEvents() {
   });
   els.mapPeopleMarkersToggle.addEventListener("change", () => {
     state.gameData.settings.showPeopleMarkers = els.mapPeopleMarkersToggle.checked;
+    markGameDirty({ defer: true });
+    renderGamePanel({ force: true });
+    queueDraw();
+  });
+  els.mapExplorationGridToggle.addEventListener("change", () => {
+    state.gameData.settings.showExplorationGrid = els.mapExplorationGridToggle.checked;
     markGameDirty({ defer: true });
     renderGamePanel({ force: true });
     queueDraw();
@@ -1132,6 +1149,7 @@ function bindEvents() {
   els.mapCanvas.addEventListener("pointerleave", onPointerLeave);
   els.mapCanvas.addEventListener("pointerup", onPointerUp);
   els.mapCanvas.addEventListener("pointercancel", onPointerCancel);
+  els.mapCanvas.addEventListener("click", onCanvasClick);
   els.mapCanvas.addEventListener("contextmenu", (event) => event.preventDefault());
   els.mapCanvas.addEventListener("wheel", onWheel, { passive: false });
   window.addEventListener("resize", () => {
@@ -2015,6 +2033,7 @@ async function renderGameView(options = {}) {
     els.infoTitle.textContent = "";
     els.infoBody.textContent = "";
     els.gamePanel.hidden = true;
+    els.mapToolbar.hidden = true;
     els.mapActions.hidden = true;
     els.missingMapActions.hidden = true;
     els.mapEmpty.hidden = false;
@@ -2063,6 +2082,7 @@ async function renderGameView(options = {}) {
       ? "本地地图图片未找到，请在右侧重新导入地图图片。"
       : "这个学校还没有大地图图片";
     els.missingMapActions.hidden = false;
+    els.mapToolbar.hidden = true;
     els.mapActions.hidden = true;
     state.editorEnabled = false;
     clearMapRenderCache();
@@ -2140,17 +2160,27 @@ function gameLoop(now) {
 }
 
 function updateGameMovement(dt) {
+  if (state.moveTarget && !state.movementKeys.size && distance(state.gameData.player, state.moveTarget) <= MOVE_TARGET_STOP_DISTANCE) {
+    state.moveTarget = null;
+  }
   const vector = getMovementVector();
   if (!vector.x && !vector.y) return false;
   const player = state.gameData.player;
   const speed = (Number(player.walkSpeed) || DEFAULT_WALK_SPEED) * WALK_SPEED_FACTOR;
   const next = resolvePlayerMove(player, vector, speed * dt);
-  if (!next) return false;
+  if (!next) {
+    if (state.moveTarget && !state.movementKeys.size) state.moveTarget = null;
+    return false;
+  }
+  markMapInteraction(90);
   player.x = next.x;
   player.y = next.y;
+  if (state.moveTarget && !state.movementKeys.size && distance(player, state.moveTarget) <= MOVE_TARGET_STOP_DISTANCE) {
+    state.moveTarget = null;
+  }
   updateNearbyGameContext();
   followPlayer();
-  markGameDirty({ defer: true });
+  markGameDirty({ defer: true, keepExplorationCache: true });
   renderGamePanel();
   queueDraw();
   return true;
@@ -2307,9 +2337,10 @@ function getMovementVector() {
   if (state.movementKeys.has("ArrowRight") || state.movementKeys.has("KeyD")) x += 1;
   if (state.movementKeys.has("ArrowUp") || state.movementKeys.has("KeyW")) y -= 1;
   if (state.movementKeys.has("ArrowDown") || state.movementKeys.has("KeyS")) y += 1;
-  if (state.touchMoveVector.active) {
-    x += state.touchMoveVector.x;
-    y += state.touchMoveVector.y;
+  if (!x && !y && state.moveTarget) {
+    const player = state.gameData.player;
+    x = state.moveTarget.x - player.x;
+    y = state.moveTarget.y - player.y;
   }
   const length = Math.hypot(x, y);
   return length > 0 ? { x: x / length, y: y / length } : { x: 0, y: 0 };
@@ -2320,6 +2351,7 @@ function handleGameKeyDown(event) {
   const code = event.code;
   if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "KeyA", "KeyD", "KeyW", "KeyS"].includes(code)) return false;
   event.preventDefault();
+  state.moveTarget = null;
   state.movementKeys.add(code);
   startGameLoop();
   return true;
@@ -2579,16 +2611,20 @@ function getPlayerCollisionRadius(point = state.gameData.player) {
 
 function isTransparentMapPixel(point) {
   if (!state.mapImage || !state.mapNaturalSize.width || !state.mapNaturalSize.height) return true;
+  const x = clamp(Math.floor(point.x), 0, state.mapNaturalSize.width - 1);
+  const y = clamp(Math.floor(point.y), 0, state.mapNaturalSize.height - 1);
+  const key = `${x},${y}`;
+  if (state.mapAlphaPixelCache.has(key)) return state.mapAlphaPixelCache.get(key);
   const canvas = state.mapAlphaSampleCanvas || (state.mapAlphaSampleCanvas = document.createElement("canvas"));
   canvas.width = 1;
   canvas.height = 1;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return false;
-  const x = clamp(Math.floor(point.x), 0, state.mapNaturalSize.width - 1);
-  const y = clamp(Math.floor(point.y), 0, state.mapNaturalSize.height - 1);
   ctx.clearRect(0, 0, 1, 1);
   ctx.drawImage(state.mapImage, x, y, 1, 1, 0, 0, 1, 1);
-  return ctx.getImageData(0, 0, 1, 1).data[3] < 16;
+  const transparent = ctx.getImageData(0, 0, 1, 1).data[3] < 16;
+  state.mapAlphaPixelCache.set(key, transparent);
+  return transparent;
 }
 
 function findNearbyWalkablePoint(origin, options = {}) {
@@ -2672,6 +2708,7 @@ function clearMapRenderCache() {
   state.interactionPreviewCanvas.height = 1;
   state.mapAlphaSampleCanvas.width = 1;
   state.mapAlphaSampleCanvas.height = 1;
+  state.mapAlphaPixelCache.clear();
   state.interactionPreviewScale = 1;
   state.mapRenderWarm = false;
   clearExplorationCache();
@@ -2692,7 +2729,7 @@ function markStructureLayerDirty() {
 
 function markGameDirty(options = {}) {
   state.gameDirty = true;
-  clearExplorationCache();
+  if (!options.keepExplorationCache) clearExplorationCache();
   const school = getSelectedSchool();
   if (!school) return;
   state.gameCache.set(school.id, state.gameData);
@@ -2715,6 +2752,7 @@ async function saveCurrentGameData() {
 
 function updateNearbyGameContext() {
   if (state.gameData.location.kind === "building") {
+    state.moveTarget = null;
     const buildingId = state.gameData.location.buildingId || state.gameData.selectedBuildingId || "";
     state.currentNearbyInteractionTargets = [];
     state.currentNearbyPhotoSpotId = "";
@@ -3157,6 +3195,7 @@ function drawCoverImage(ctx, image, x, y, width, height) {
 
 function clearExplorationCache() {
   state.explorationCache = null;
+  state.explorationDirty = true;
 }
 
 function updateExplorationProgressUi() {
@@ -3171,11 +3210,16 @@ function updateExplorationProgressUi() {
 function getExplorationProgress() {
   const school = getSelectedSchool();
   if (!school || !state.mapImage || !state.mapNaturalSize.width || !state.mapNaturalSize.height) return createEmptyExplorationProgress();
+  if (!state.explorationDirty && state.explorationCache?.progress) return state.explorationCache.progress;
   const editData = getSelectedEditData();
   const key = createExplorationCacheKey(school, editData, state.gameData);
-  if (state.explorationCache?.key === key) return state.explorationCache.progress;
+  if (state.explorationCache?.key === key) {
+    state.explorationDirty = false;
+    return state.explorationCache.progress;
+  }
   const progress = calculateExplorationProgress(editData, state.gameData);
   state.explorationCache = { key, progress };
+  state.explorationDirty = false;
   return progress;
 }
 
@@ -3193,7 +3237,8 @@ function createEmptyExplorationProgress() {
     totalCells: 0,
     gridSize: 0,
     columns: 0,
-    rows: 0
+    rows: 0,
+    cells: []
   };
 }
 
@@ -3203,7 +3248,7 @@ function createExplorationCacheKey(school, editData, gameData) {
     .map((region) => `${region.id}:${region.type}:${region.visible !== false ? 1 : 0}:${getRegionAreaCount(region)}:${hasLitBuildingMemory(gameData.buildings?.[region.id]) ? 1 : 0}`)
     .join("|");
   const spots = (gameData.photoSpots || [])
-    .map((spot) => `${Math.round(spot.x)},${Math.round(spot.y)}`)
+    .map((spot) => `${Math.round(spot.x)},${Math.round(spot.y)}:${hasLitPhotoSpotMemory(spot) ? 1 : 0}`)
     .join("|");
   return [
     school.id,
@@ -3252,6 +3297,7 @@ function calculateExplorationProgress(editData, gameData) {
   }
 
   for (const spot of gameData.photoSpots || []) {
+    if (!hasLitPhotoSpotMemory(spot)) continue;
     const col = Math.floor(clamp(spot.x, 0, Math.max(0, width - 1)) / gridSize);
     const row = Math.floor(clamp(spot.y, 0, Math.max(0, height - 1)) / gridSize);
     const index = indexFor(clamp(col, 0, columns - 1), clamp(row, 0, rows - 1));
@@ -3271,7 +3317,8 @@ function calculateExplorationProgress(editData, gameData) {
     totalCells,
     gridSize,
     columns,
-    rows
+    rows,
+    cells
   };
 }
 
@@ -3346,8 +3393,17 @@ function boundsOverlap(a, b) {
 
 function hasLitBuildingMemory(building) {
   if (!building) return false;
-  if (building.customName || building.photos?.length || building.entrances?.length || building.rooms?.length) return true;
-  return false;
+  if (building.photos?.length) return true;
+  return (building.rooms || []).some((room) => {
+    if (room.photos?.length) return true;
+    const hasItemPhoto = (room.items || []).some((item) => item.photos?.length);
+    const hasPersonPhoto = (room.people || []).some((person) => Boolean(person.photo || person.portrait));
+    return hasItemPhoto || hasPersonPhoto;
+  });
+}
+
+function hasLitPhotoSpotMemory(spot) {
+  return Boolean(spot?.photos?.length);
 }
 
 function renderGamePanel(options = {}) {
@@ -3355,6 +3411,7 @@ function renderGamePanel(options = {}) {
   const visible = Boolean(school && state.mapImage && !state.editorEnabled);
   const insideBuilding = state.gameData.location.kind === "building";
   els.gamePanel.hidden = !visible;
+  els.mapToolbar.hidden = !visible || insideBuilding;
   els.mapActions.hidden = !visible || insideBuilding;
   els.zoomReadout.hidden = visible && insideBuilding;
   els.explorationProgress.hidden = !visible || insideBuilding;
@@ -3362,6 +3419,7 @@ function renderGamePanel(options = {}) {
   els.mapPhotoMarkersToggle.checked = state.gameData.settings.showPhotoMarkers !== false;
   els.mapInteractionMarkersToggle.checked = state.gameData.settings.showInteractionMarkers !== false;
   els.mapPeopleMarkersToggle.checked = state.gameData.settings.showPeopleMarkers !== false;
+  els.mapExplorationGridToggle.checked = state.gameData.settings.showExplorationGrid === true;
   if (!visible) return;
   els.gamePanel.classList.toggle("inside-building", insideBuilding);
   els.panelHeader.hidden = true;
@@ -5023,13 +5081,22 @@ function warmupMapRendering() {
 }
 
 function markMapInteraction(duration = 140) {
-  state.interactionFastUntil = performance.now() + duration;
-  if (state.interactionIdleTimer) window.clearTimeout(state.interactionIdleTimer);
+  state.interactionFastUntil = Math.max(state.interactionFastUntil, performance.now() + duration);
+  scheduleInteractionIdleRedraw(duration + 20);
+}
+
+function scheduleInteractionIdleRedraw(delay = 160) {
+  if (state.interactionIdleTimer) return;
   state.interactionIdleTimer = window.setTimeout(() => {
-    state.interactionFastUntil = 0;
     state.interactionIdleTimer = null;
+    const remaining = state.interactionFastUntil - performance.now();
+    if (remaining > 0) {
+      scheduleInteractionIdleRedraw(Math.min(220, Math.max(32, remaining + 20)));
+      return;
+    }
+    state.interactionFastUntil = 0;
     queueDraw();
-  }, duration + 20);
+  }, delay);
 }
 
 function renderEditorState() {
@@ -5834,7 +5901,6 @@ function onPointerMove(event) {
 
 function onPointerLeave() {
   if (!state.editorEnabled) {
-    state.touchMoveVector = { x: 0, y: 0, active: false };
     state.gamePointerDown = null;
     return;
   }
@@ -5849,7 +5915,7 @@ function updateCanvasCursor() {
     return;
   }
   if (!state.editorEnabled) {
-    els.mapCanvas.style.cursor = "default";
+    els.mapCanvas.style.cursor = "crosshair";
     return;
   }
   if (state.pointer.down && state.pointer.mode === "pan") {
@@ -5917,7 +5983,6 @@ function onPointerUp(event) {
 
 function onPointerCancel() {
   if (!state.editorEnabled) {
-    state.touchMoveVector = { x: 0, y: 0, active: false };
     state.gamePointerDown = null;
     return;
   }
@@ -5926,6 +5991,13 @@ function onPointerCancel() {
   state.pointer.down = false;
   state.activeStroke = null;
   queueDraw();
+}
+
+function onCanvasClick(event) {
+  if (!state.mapImage || state.editorEnabled) return;
+  if (performance.now() - state.lastGamePointerClickHandledAt < 220) return;
+  const point = getCanvasPoint(event);
+  handleGameCanvasClick(clampImagePoint(screenToImage(point.x, point.y)));
 }
 
 function startPinchGesture() {
@@ -5982,9 +6054,6 @@ function handleGamePointerDown(event) {
     moved: false
   };
   els.mapCanvas.setPointerCapture?.(event.pointerId);
-  if (event.pointerType === "touch") {
-    state.touchMoveVector = { x: 0, y: 0, active: true };
-  }
 }
 
 function handleGamePointerMove(event, point = getCanvasPoint(event)) {
@@ -5994,27 +6063,14 @@ function handleGamePointerMove(event, point = getCanvasPoint(event)) {
   state.gamePointerDown.lastX = point.x;
   state.gamePointerDown.lastY = point.y;
   state.gamePointerDown.moved = Math.hypot(dx, dy) > 6;
-  if (state.gamePointerDown.pointerType === "touch") {
-    const max = 54;
-    const length = Math.hypot(dx, dy);
-    const scale = length > max ? max / length : 1;
-    state.touchMoveVector = {
-      x: (dx * scale) / max,
-      y: (dy * scale) / max,
-      active: true
-    };
-    startGameLoop();
-  }
 }
 
 function handleGamePointerUp(event) {
   const pointer = state.gamePointerDown;
   if (!pointer || pointer.pointerId !== event.pointerId) return;
   els.mapCanvas.releasePointerCapture?.(event.pointerId);
-  if (pointer.pointerType === "touch") {
-    state.touchMoveVector = { x: 0, y: 0, active: false };
-  }
   if (!pointer.moved) {
+    state.lastGamePointerClickHandledAt = performance.now();
     handleGameCanvasClick(pointer.imagePoint);
   }
   state.gamePointerDown = null;
@@ -6027,7 +6083,9 @@ function handleGameCanvasClick(imagePoint) {
     return;
   }
   const clickedSpot = getNearbyPhotoSpotTarget(imagePoint);
-  if (clickedSpot) {
+  const nearbySpot = clickedSpot && state.currentNearbyInteractionTargets.find((target) => target.key === clickedSpot.key);
+  if (nearbySpot) {
+    state.moveTarget = null;
     state.selectedNearbyInteractionKey = clickedSpot.key;
     state.defaultPhotoSpotInteractionKey = clickedSpot.key;
     state.gameData.selectedPhotoSpotId = clickedSpot.id;
@@ -6038,8 +6096,12 @@ function handleGameCanvasClick(imagePoint) {
     renderGamePanel({ force: true });
     return;
   }
-  const target = getNearbyStructureTargets(imagePoint)[0];
+  const clickedStructure = getNearbyStructureTargets(imagePoint)[0];
+  const target = clickedStructure
+    ? state.currentNearbyInteractionTargets.find((item) => item.key === clickedStructure.key)
+    : null;
   if (target) {
+    state.moveTarget = null;
     state.selectedNearbyInteractionKey = target.key;
     state.gameData.selectedBuildingId = target.id;
     state.selectedSpotPhotoForEditId = "";
@@ -6048,7 +6110,52 @@ function handleGameCanvasClick(imagePoint) {
     state.selectedBuildingPhotoForEditId = "";
     markGameDirty({ defer: true });
     renderGamePanel({ force: true });
+    return;
   }
+  setMoveTargetFromClick(imagePoint);
+}
+
+function setMoveTargetFromClick(imagePoint) {
+  const target = findMoveTargetNear(imagePoint);
+  if (!target) {
+    state.moveTarget = null;
+    queueDraw();
+    return;
+  }
+  state.moveTarget = target;
+  state.movementKeys.clear();
+  updateNearbyGameContext();
+  renderGamePanel();
+  startGameLoop();
+  queueDraw();
+}
+
+function findMoveTargetNear(point) {
+  const clamped = clampImagePoint(point);
+  if (canPlayerMoveTo(clamped)) return clamped;
+  return findNearestWalkableClickTarget(clamped, MOVE_TARGET_SEARCH_RADIUS);
+}
+
+function findNearestWalkableClickTarget(point, maxRadius) {
+  const step = Math.max(8, getPlayerCollisionRadius() * 0.5);
+  let best = null;
+  let bestDistance = Infinity;
+  for (let radius = step; radius <= maxRadius; radius += step) {
+    const samples = Math.max(12, Math.ceil((Math.PI * 2 * radius) / step));
+    for (let index = 0; index < samples; index++) {
+      const angle = (index / samples) * Math.PI * 2;
+      const candidate = clampImagePoint({
+        x: point.x + Math.cos(angle) * radius,
+        y: point.y + Math.sin(angle) * radius
+      });
+      const d = distance(point, candidate);
+      if (d >= bestDistance || !canPlayerMoveTo(candidate)) continue;
+      best = candidate;
+      bestDistance = d;
+    }
+    if (best) return best;
+  }
+  return null;
 }
 
 function selectInteriorRoomAtScreen(pointer) {
@@ -7536,12 +7643,38 @@ function drawGameScene(ctx, editData) {
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = fastDraw ? "low" : "high";
   drawBaseMapLayer(ctx, fastDraw);
+  drawExplorationGridOverlay(ctx);
   drawGamePhotoMarkers(ctx);
   drawNearbyBuildingHints(ctx, editData);
+  drawMoveTarget(ctx);
   drawPlayer(ctx);
-  drawTouchJoystick(ctx);
   drawNearbyBuildingLabels(ctx, editData);
   drawGamePhotoLabels(ctx);
+}
+
+function drawExplorationGridOverlay(ctx) {
+  if (state.gameData.settings.showExplorationGrid !== true) return;
+  const progress = getExplorationProgress();
+  if (!progress.gridSize || !progress.cells.length) return;
+  ctx.save();
+  ctx.lineWidth = 1;
+  for (let row = 0; row < progress.rows; row++) {
+    for (let col = 0; col < progress.columns; col++) {
+      const cell = progress.cells[row * progress.columns + col];
+      if (!cell?.valid) continue;
+      const bounds = getExplorationCellBounds(col, row, progress.gridSize, state.mapNaturalSize.width, state.mapNaturalSize.height);
+      const topLeft = imageToScreen({ x: bounds.left, y: bounds.top });
+      const bottomRight = imageToScreen({ x: bounds.right, y: bounds.bottom });
+      const width = bottomRight.x - topLeft.x;
+      const height = bottomRight.y - topLeft.y;
+      if (topLeft.x > state.canvasSize.width || topLeft.y > state.canvasSize.height || bottomRight.x < 0 || bottomRight.y < 0) continue;
+      ctx.fillStyle = cell.lit ? "rgba(93, 152, 75, 0.24)" : "rgba(255, 250, 240, 0.22)";
+      ctx.strokeStyle = cell.lit ? "rgba(93, 152, 75, 0.62)" : "rgba(162, 61, 52, 0.32)";
+      ctx.fillRect(topLeft.x, topLeft.y, width, height);
+      ctx.strokeRect(topLeft.x + 0.5, topLeft.y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1));
+    }
+  }
+  ctx.restore();
 }
 
 function drawGamePhotoMarkers(ctx) {
@@ -7840,21 +7973,29 @@ function drawPlayer(ctx) {
   ctx.restore();
 }
 
-function drawTouchJoystick(ctx) {
-  if (!state.touchMoveVector.active || !state.gamePointerDown) return;
-  const pointer = state.gamePointerDown;
+function drawMoveTarget(ctx) {
+  if (!state.moveTarget || state.gameData.location.kind !== "campus") return;
+  const screen = imageToScreen(state.moveTarget);
+  if (screen.x < -40 || screen.y < -40 || screen.x > state.canvasSize.width + 40 || screen.y > state.canvasSize.height + 40) return;
   ctx.save();
-  ctx.fillStyle = "rgba(255, 250, 240, 0.24)";
-  ctx.strokeStyle = "rgba(31, 85, 78, 0.55)";
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(31, 85, 78, 0.82)";
+  ctx.fillStyle = "rgba(255, 250, 240, 0.72)";
+  ctx.lineWidth = 2.5;
   ctx.beginPath();
-  ctx.arc(pointer.startX, pointer.startY, 54, 0, Math.PI * 2);
+  ctx.arc(screen.x, screen.y, 11, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = "rgba(31, 85, 78, 0.75)";
+  ctx.strokeStyle = "rgba(31, 85, 78, 0.58)";
   ctx.beginPath();
-  ctx.arc(pointer.startX + state.touchMoveVector.x * 54, pointer.startY + state.touchMoveVector.y * 54, 18, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.moveTo(screen.x - 18, screen.y);
+  ctx.lineTo(screen.x - 6, screen.y);
+  ctx.moveTo(screen.x + 6, screen.y);
+  ctx.lineTo(screen.x + 18, screen.y);
+  ctx.moveTo(screen.x, screen.y - 18);
+  ctx.lineTo(screen.x, screen.y - 6);
+  ctx.moveTo(screen.x, screen.y + 6);
+  ctx.lineTo(screen.x, screen.y + 18);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -8721,6 +8862,7 @@ function normalizeGameData(source) {
   base.settings.showPhotoMarkers = settings.showPhotoMarkers !== false;
   base.settings.showInteractionMarkers = settings.showInteractionMarkers !== false;
   base.settings.showPeopleMarkers = settings.showPeopleMarkers !== false;
+  base.settings.showExplorationGrid = settings.showExplorationGrid === true;
   const location = source.location && typeof source.location === "object" ? source.location : {};
   base.location = {
     kind: location.kind === "building" || location.kind === "room" ? location.kind : "campus",
@@ -10075,6 +10217,10 @@ function getGameTextState() {
       walkSpeed: player.walkSpeed || DEFAULT_WALK_SPEED,
       portrait: Boolean(player.portrait)
     },
+    moveTarget: state.moveTarget ? {
+      x: Number(state.moveTarget.x.toFixed(2)),
+      y: Number(state.moveTarget.y.toFixed(2))
+    } : null,
     follow: {
       screenX: state.mapImage ? Number(imageToScreen(player).x.toFixed(2)) : 0,
       screenY: state.mapImage ? Number(imageToScreen(player).y.toFixed(2)) : 0
@@ -10095,6 +10241,7 @@ function getGameTextState() {
     showPhotoMarkers: state.gameData.settings.showPhotoMarkers,
     showInteractionMarkers: state.gameData.settings.showInteractionMarkers,
     showPeopleMarkers: state.gameData.settings.showPeopleMarkers,
+    showExplorationGrid: state.gameData.settings.showExplorationGrid === true,
     nearbyTargets: state.currentNearbyInteractionTargets.map((target) => target.key),
     nearbyBuildingIds: [...state.currentNearbyBuildingIds],
     selectedBuildingId: state.gameData.selectedBuildingId || "",

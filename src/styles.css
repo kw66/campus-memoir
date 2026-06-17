@@ -69,6 +69,15 @@ button:disabled {
   gap: 8px;
 }
 
+.topbar-left {
+  min-width: 0;
+}
+
+.topbar-left,
+.topbar-actions {
+  flex: 0 0 auto;
+}
+
 .topbar-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -133,8 +142,23 @@ button:disabled {
 }
 
 .current-school {
-  color: var(--muted);
-  font-size: 15px;
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+  max-width: min(68%, 360px);
+  padding: 6px 9px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line-strong), transparent 18%);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel), transparent 8%);
+  box-shadow: 0 8px 20px rgba(49, 44, 33, 0.1);
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .game-info-panel {
@@ -330,9 +354,17 @@ button:disabled {
   min-width: 0;
 }
 
+.map-toolbar {
+  display: grid;
+  grid-template-columns: minmax(170px, 220px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 .map-frame {
   position: relative;
-  height: calc(100vh - 86px);
+  height: calc(100vh - 138px);
   min-height: 560px;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -367,12 +399,7 @@ button:disabled {
 }
 
 .exploration-progress {
-  position: absolute;
-  top: 10px;
-  left: 74px;
-  z-index: 2;
-  width: min(220px, calc(100% - 420px));
-  min-width: 152px;
+  min-width: 0;
   padding: 6px 8px;
   border: 1px solid color-mix(in srgb, var(--line-strong), transparent 22%);
   border-radius: 7px;
@@ -414,10 +441,6 @@ button:disabled {
 }
 
 .map-actions {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 3;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1757,13 +1780,45 @@ textarea.game-input {
 }
 
 @media (max-width: 980px) {
+  .app-shell {
+    padding: 8px;
+    gap: 8px;
+  }
+
   .topbar {
-    align-items: flex-start;
-    flex-direction: column;
+    min-height: 44px;
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .topbar-left,
+  .topbar-actions {
+    min-width: 0;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .topbar-left {
+    flex: 1 1 0;
   }
 
   .topbar-actions {
-    justify-content: flex-start;
+    flex: 2 1 0;
+    justify-content: stretch;
+  }
+
+  .school-button,
+  .topbar .secondary-button,
+  .topbar .primary-button {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 6px;
+    font-size: 13px;
+    white-space: nowrap;
   }
 
   .game-info-grid,
@@ -1773,23 +1828,71 @@ textarea.game-input {
 
   .game-layout {
     grid-template-columns: 1fr;
+    gap: 8px;
   }
 
-  .map-frame,
-  .info-panel {
-    height: auto;
-    min-height: 360px;
+  .map-toolbar {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .map-frame {
+    height: clamp(420px, 68dvh, 680px);
+    min-height: 420px;
+    border-radius: 8px;
+  }
+
+  .map-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    justify-content: stretch;
+    gap: 5px;
+    padding: 5px;
+  }
+
+  .map-action-button,
+  .map-action-toggle {
+    min-height: 34px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .map-action-toggle input {
+    width: 16px;
+    height: 16px;
+  }
+
+  .map-zoom-readout {
+    top: 8px;
+    left: 8px;
+    min-width: 56px;
+    min-height: 34px;
+    display: inline-grid;
+    place-items: center;
   }
 
   .exploration-progress {
-    top: 88px;
-    left: 10px;
-    width: min(220px, calc(100% - 20px));
+    min-width: 0;
+    padding: 5px 7px;
   }
 
   .info-panel {
+    height: auto;
     min-height: 260px;
+    padding: 8px;
     overflow: visible;
+  }
+
+  .current-school {
+    right: 8px;
+    bottom: 8px;
+    max-width: min(42%, 180px);
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 8px;
+    font-size: 12px;
   }
 
   .game-panel {
@@ -1841,6 +1944,17 @@ textarea.game-input {
 
   .school-dialog {
     width: calc(100vw - 10px);
+    max-height: calc(100dvh - 10px);
+    overflow: hidden;
+  }
+
+  .school-dialog[open] {
+    display: grid;
+  }
+
+  .dialog-shell {
+    max-height: calc(100dvh - 12px);
+    overflow: auto;
   }
 
   .dialog-shell {
@@ -1860,10 +1974,13 @@ textarea.game-input {
     grid-template-columns: 76px minmax(0, 1fr) 34px;
   }
 
-  .editor-mode-tabs,
+  .editor-mode-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .segmented-row,
   .segmented-row.two-options {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .tool-grid {
@@ -1898,5 +2015,17 @@ textarea.game-input {
 
   .form-footer {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 980px) and (max-height: 760px) {
+  .map-frame {
+    height: 64dvh;
+    min-height: 360px;
+  }
+
+  .map-action-button,
+  .map-action-toggle {
+    min-height: 32px;
   }
 }

@@ -5,14 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>校园回忆录</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./src/styles.css?v=20260617h" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260617j" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div class="topbar-left">
           <button class="school-button" id="schoolButton" type="button">选择学校</button>
-          <div class="current-school" id="currentSchool">未选择学校</div>
         </div>
         <div class="topbar-actions">
           <button class="secondary-button compact" id="gameInfoButton" type="button" aria-expanded="false">游戏信息</button>
@@ -58,9 +57,7 @@
 
       <main class="game-layout" aria-label="校园回忆录主界面">
         <section class="map-panel" aria-label="地图区域">
-          <div class="map-frame" id="mapFrame">
-            <canvas class="map-canvas" id="mapCanvas"></canvas>
-            <output class="map-zoom-readout" id="zoomReadout">100%</output>
+          <div class="map-toolbar" id="mapToolbar" hidden>
             <div class="exploration-progress" id="explorationProgress" hidden>
               <div class="exploration-progress-row">
                 <span>探索</span>
@@ -75,7 +72,13 @@
               <label class="map-action-toggle"><input id="mapPhotoMarkersToggle" type="checkbox" checked />点位</label>
               <label class="map-action-toggle"><input id="mapInteractionMarkersToggle" type="checkbox" checked />标注</label>
               <label class="map-action-toggle"><input id="mapPeopleMarkersToggle" type="checkbox" checked />人物</label>
+              <label class="map-action-toggle"><input id="mapExplorationGridToggle" type="checkbox" />探索</label>
             </div>
+          </div>
+          <div class="map-frame" id="mapFrame">
+            <canvas class="map-canvas" id="mapCanvas"></canvas>
+            <output class="map-zoom-readout" id="zoomReadout">100%</output>
+            <div class="current-school" id="currentSchool">未选择学校</div>
             <div class="map-empty" id="mapEmpty">
               <div>请选择或新建学校</div>
             </div>
@@ -374,6 +377,6 @@
       </form>
     </dialog>
 
-    <script src="./src/app.js?v=20260617h"></script>
+    <script src="./src/app.js?v=20260617j"></script>
   </body>
 </html>
