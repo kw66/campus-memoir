@@ -208,6 +208,63 @@ button:disabled {
   font-weight: 900;
 }
 
+.album-card {
+  display: grid;
+  gap: 10px;
+}
+
+.album-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.album-card h2 {
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 16px;
+}
+
+.album-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.album-status {
+  min-width: 58px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #f1eadf;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.album-status[data-status="connected"] {
+  background: #dfeee4;
+  color: #22623b;
+}
+
+.album-status[data-status="needs-permission"] {
+  background: #fff1d7;
+  color: #956216;
+}
+
+.album-status[data-status="unsupported"] {
+  background: #f4e1df;
+  color: #a03f35;
+}
+
+.album-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
 .stats-card {
   grid-column: 1 / -1;
 }

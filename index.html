@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>校园回忆录</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./src/styles.css?v=20260617g" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260617h" />
   </head>
   <body>
     <div class="app-shell">
@@ -35,6 +35,18 @@
           <article class="game-info-card project-card">
             <p><a href="https://github.com/kw66/campus-memoir" target="_blank" rel="noreferrer"><span>项目地址</span><em>（求个star⭐）</em></a></p>
             <p><span>小红书交流帖</span><em>（求点赞❤️）</em></p>
+          </article>
+          <article class="game-info-card album-card">
+            <div class="album-card-head">
+              <h2>相册库</h2>
+              <span class="album-status" id="albumStatus">检测中</span>
+            </div>
+            <p id="albumDescription">原图可保存到本机文件夹，游戏内只保留预览图。</p>
+            <div class="album-actions">
+              <button class="secondary-button compact" id="albumChooseButton" type="button">设置相册</button>
+              <button class="secondary-button compact" id="albumReconnectButton" type="button">重连</button>
+              <button class="secondary-button compact danger" id="albumForgetButton" type="button">关闭</button>
+            </div>
           </article>
           <article class="game-info-card stats-card">
             <h2>校园足迹</h2>
@@ -362,6 +374,6 @@
       </form>
     </dialog>
 
-    <script src="./src/app.js?v=20260617g"></script>
+    <script src="./src/app.js?v=20260617h"></script>
   </body>
 </html>

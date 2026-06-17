@@ -4,12 +4,14 @@ const CURRENT_SCHOOL_KEY = "campus-memoir-current-school-id";
 const STATS_VISITOR_KEY = "campus-memoir-stats-visitor";
 const STATS_LAST_UV_DATE_KEY = "campus-memoir-stats-last-uv-date";
 const DB_NAME = "campus-memoir-local-db";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const MAP_IMAGE_STORE = "mapImages";
 const EDIT_DATA_STORE = "mapEditData";
 const PEOPLE_DATA_STORE = "peopleData";
 const EXTRA_IMAGES_STORE = "extraImages";
 const GAME_DATA_STORE = "gameData";
+const APP_SETTINGS_STORE = "appSettings";
+const ALBUM_SETTINGS_KEY = "album";
 const STRUCTURE_BRUSH_SIZE = 24;
 const LINEAR_STRUCTURE_WIDTH = 12;
 const DEFAULT_PLAYER_RADIUS = 26;
@@ -24,6 +26,9 @@ const PHOTO_SPOT_NAME_PREFIX = "拍照点";
 const EXPLORATION_TARGET_GRID_COUNT = 52;
 const EXPLORATION_MIN_GRID_SIZE = 90;
 const EXPLORATION_MAX_GRID_SIZE = 240;
+const PHOTO_PREVIEW_MAX_SIDE = 1600;
+const PHOTO_PREVIEW_QUALITY = 0.82;
+const PHOTO_PREVIEW_TYPE = "image/jpeg";
 const STATS_COUNTER_RPC_URL = "https://ypefmpeekfucmarbbdov.supabase.co";
 const STATS_COUNTER_RPC_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlwZWZtcGVla2Z1Y21hcmJiZG92Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5NTA2NTYsImV4cCI6MjA4MTUyNjY1Nn0.XTOQNFuuwfu9nwDTnO9-NEqlzZnzdCVnEmYEJh0rXf8";
 const STATS_COUNTER_IDS = {
@@ -326,28 +331,32 @@ const OFFICIAL_CATALOG = [
     id: "ustc-gaoxin-3d",
     name: "中国科学技术大学高新校区 3D",
     version: "2026-06-17",
-    description: "约 71MB，含高新校区 3D 底图和结构图。",
+    sizeLabel: "约 71MB",
+    description: "含高新校区 3D 底图和结构图。",
     packageUrl: "https://github.com/kw66/campus-memoir/releases/download/maps-20260617/ustc-gaoxin-3d.campus-memoir.json"
   },
   {
     id: "ustc-east-3d",
     name: "中国科学技术大学东校区 3D",
     version: "2026-06-17",
-    description: "约 112MB，含东校区 3D 底图和结构图。",
+    sizeLabel: "约 112MB",
+    description: "含东校区 3D 底图和结构图。",
     packageUrl: "https://github.com/kw66/campus-memoir/releases/download/maps-20260617/ustc-east-3d.campus-memoir.json"
   },
   {
     id: "ustc-west-3d",
     name: "中国科学技术大学西校区 3D",
     version: "2026-06-17",
-    description: "约 92MB，含西校区 3D 底图和结构图。",
+    sizeLabel: "约 92MB",
+    description: "含西校区 3D 底图和结构图。",
     packageUrl: "https://github.com/kw66/campus-memoir/releases/download/maps-20260617/ustc-west-3d.campus-memoir.json"
   },
   {
     id: "ustc-central-3d",
     name: "中国科学技术大学中校区 3D",
     version: "2026-06-17",
-    description: "约 20MB，含中校区 3D 底图和结构图。",
+    sizeLabel: "约 20MB",
+    description: "含中校区 3D 底图和结构图。",
     packageUrl: "https://github.com/kw66/campus-memoir/releases/download/maps-20260617/ustc-central-3d.campus-memoir.json"
   }
 ];
@@ -386,6 +395,15 @@ const state = {
   explorationCache: null,
   globalStats: { totalPv: 0, todayPv: 0, totalUv: 0, todayUv: 0 },
   globalStatsStatus: "正在读取校园足迹...",
+  album: {
+    supported: typeof window.showDirectoryPicker === "function",
+    handle: null,
+    enabled: false,
+    permission: "unknown",
+    rootName: "",
+    status: "checking",
+    message: "正在检测相册库..."
+  },
   photoUrlCache: new Map(),
   photoImageCache: new Map(),
   movementKeys: new Set(),
@@ -481,6 +499,11 @@ const els = {
   gameInfoButton: document.querySelector("#gameInfoButton"),
   gameInfoPanel: document.querySelector("#gameInfoPanel"),
   gameInfoCloseButton: document.querySelector("#gameInfoCloseButton"),
+  albumStatus: document.querySelector("#albumStatus"),
+  albumDescription: document.querySelector("#albumDescription"),
+  albumChooseButton: document.querySelector("#albumChooseButton"),
+  albumReconnectButton: document.querySelector("#albumReconnectButton"),
+  albumForgetButton: document.querySelector("#albumForgetButton"),
   globalStatsPanel: document.querySelector("#globalStatsPanel"),
   globalStatsStatus: document.querySelector("#globalStatsStatus"),
   explorationProgress: document.querySelector("#explorationProgress"),
@@ -594,6 +617,7 @@ async function init() {
   resizeCanvas();
   try {
     state.db = await openDatabase();
+    await loadAlbumSettings();
     state.schools = normalizeSchools(loadSchools());
     saveSchools();
     await migrateStoredEditData();
@@ -662,6 +686,19 @@ async function init() {
         renderEditorState();
         queueDraw();
       },
+      setAlbumHandleForTest: async (handle) => {
+        state.album = {
+          ...state.album,
+          supported: true,
+          handle,
+          enabled: true,
+          permission: "granted",
+          rootName: handle?.name || "test-album",
+          status: "connected",
+          message: "测试相册库已连接。"
+        };
+        renderAlbumStatus();
+      },
       getCurrentAreaDraft,
       createParallelogramAreaFromThreePoints,
       normalizeArea,
@@ -713,6 +750,18 @@ function bindEvents() {
 
   els.gameInfoCloseButton.addEventListener("click", () => {
     toggleGameInfoPanel(false);
+  });
+
+  els.albumChooseButton.addEventListener("click", () => {
+    void chooseAlbumFolder();
+  });
+
+  els.albumReconnectButton.addEventListener("click", () => {
+    void reconnectAlbumFolder();
+  });
+
+  els.albumForgetButton.addEventListener("click", () => {
+    void forgetAlbumFolder();
   });
 
   els.newSchoolChoiceButton.addEventListener("click", () => {
@@ -1909,8 +1958,10 @@ function renderDownloadCatalog() {
     const title = document.createElement("strong");
     title.textContent = item.name;
     const meta = document.createElement("span");
-    meta.textContent = item.version ? `${item.version} · ${item.description || "官方文件"}` : item.description || "官方文件";
-    text.append(title, meta);
+    meta.textContent = `GitHub Release 官方包 · ${item.version || "最新"} · ${item.sizeLabel || "文件大小未知"}`;
+    const desc = document.createElement("span");
+    desc.textContent = item.description || "点击后下载并导入到本地浏览器。";
+    text.append(title, meta, desc);
 
     const actions = document.createElement("div");
     actions.className = "download-actions";
@@ -1926,7 +1977,7 @@ function renderDownloadCatalog() {
     const fallback = document.createElement("button");
     fallback.className = "secondary-button";
     fallback.type = "button";
-    fallback.textContent = "手动";
+    fallback.textContent = "手动下载";
     fallback.title = "打开 GitHub Release 下载链接";
     fallback.addEventListener("click", () => {
       openOfficialPackageDownload(item);
@@ -2600,12 +2651,18 @@ async function getMapImageUrl(school) {
   return url;
 }
 
-function loadImageElement(src) {
+function loadImageElement(src, options = {}) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.decoding = "async";
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("地图图片加载失败"));
+    image.onload = () => {
+      if (options.revoke) URL.revokeObjectURL(src);
+      resolve(image);
+    };
+    image.onerror = () => {
+      if (options.revoke) URL.revokeObjectURL(src);
+      reject(new Error(options.message || "地图图片加载失败"));
+    };
     image.src = src;
   });
 }
@@ -3792,22 +3849,20 @@ function handleGameAction(action, button) {
 }
 
 async function addPhotosAtPlayer(files) {
-  const records = await filesToResourceRecords(files);
   const spot = getActivePhotoSpot();
   if (!spot) {
     setGameNotice("请先建立拍照点");
     renderGamePanel({ force: true });
     return;
   }
-  for (const record of records) {
-    spot.photos.push(createPhotoFromResource(record));
-  }
+  const photos = await filesToPhotoRecords(files, { kind: "photoSpot", spotId: spot.id });
+  for (const photo of photos) spot.photos.push(photo);
   spot.activeIndex = Math.max(0, spot.photos.length - 1);
   state.gameData.selectedSpotPhotoId = spot.photos[spot.activeIndex]?.id || "";
   state.selectedSpotPhotoForEditId = "";
   spot.updatedAt = new Date().toISOString();
   state.gameData.selectedPhotoSpotId = spot.id;
-  setGameNotice(`已添加 ${records.length} 张照片`);
+  setGameNotice(`已添加 ${photos.length} 张照片`);
   markGameDirty();
   renderGamePanel({ force: true });
   queueDraw();
@@ -3862,6 +3917,140 @@ function createPhotoFromResource(record) {
     name: record.name || "photo",
     resource: record,
     createdAt: new Date().toISOString()
+  });
+}
+
+async function filesToPhotoRecords(files, context = {}) {
+  const photos = [];
+  for (const file of files) {
+    photos.push(await createPhotoFromFile(file, context));
+  }
+  return photos;
+}
+
+async function createPhotoFromFile(file, context = {}) {
+  const photoId = createId("photo");
+  let original = null;
+  let previewSource = file;
+  if (await canUseAlbumFolder()) {
+    try {
+      original = await saveOriginalPhotoToAlbum(file, photoId, context);
+    } catch (error) {
+      console.warn("保存原图到相册库失败，改用浏览器存储:", error);
+      state.album.enabled = false;
+      state.album.status = "needs-permission";
+      state.album.message = "相册库写入失败，本次照片已存入浏览器。";
+      renderAlbumStatus();
+    }
+    if (original) {
+      try {
+        previewSource = await createPreviewBlob(file);
+      } catch (error) {
+        console.warn("预览图压缩失败，改用原图预览:", error);
+        previewSource = file;
+      }
+    }
+  }
+  const previewName = original ? makePreviewFileName(file.name, photoId) : (file.name || "photo");
+  const record = await blobToResourceRecord(previewSource, previewName);
+  return normalizePhotoRecord({
+    id: photoId,
+    name: file.name || "photo",
+    resource: record,
+    original,
+    createdAt: new Date().toISOString()
+  });
+}
+
+async function canUseAlbumFolder() {
+  if (!state.album.supported || !state.album.handle) return false;
+  if (state.album.enabled) return true;
+  const permission = await queryAlbumPermission(state.album.handle);
+  state.album.permission = permission;
+  state.album.enabled = permission === "granted";
+  state.album.status = state.album.enabled ? "connected" : "needs-permission";
+  state.album.message = state.album.enabled ? "原图会保存到本机相册库。" : "相册库需要重新授权，本次使用浏览器存储。";
+  renderAlbumStatus();
+  return state.album.enabled;
+}
+
+async function saveOriginalPhotoToAlbum(file, photoId, context = {}) {
+  const school = getSelectedSchool();
+  const root = state.album.handle;
+  const appDir = await getOrCreateDirectory(root, "campus-memoir");
+  const schoolsDir = await getOrCreateDirectory(appDir, "schools");
+  const schoolDirName = safeFileName(school?.name || school?.id || "unknown-school");
+  const schoolDir = await getOrCreateDirectory(schoolsDir, schoolDirName);
+  const photosDir = await getOrCreateDirectory(schoolDir, "photos");
+  const originalsDir = await getOrCreateDirectory(photosDir, "originals");
+  const now = new Date();
+  const yearDir = await getOrCreateDirectory(originalsDir, String(now.getFullYear()));
+  const monthDir = await getOrCreateDirectory(yearDir, String(now.getMonth() + 1).padStart(2, "0"));
+  const fileName = makeAlbumPhotoFileName(file.name, photoId);
+  const fileHandle = await monthDir.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(file);
+  await writable.close();
+  return {
+    storage: "local-folder",
+    albumRoot: state.album.rootName || root.name || "",
+    relativePath: ["campus-memoir", "schools", schoolDirName, "photos", "originals", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), fileName].join("/"),
+    name: file.name || fileName,
+    type: file.type || "application/octet-stream",
+    size: file.size || 0,
+    lastModified: Number.isFinite(file.lastModified) ? file.lastModified : null,
+    schoolId: school?.id || "",
+    context: sanitizePhotoContext(context),
+    savedAt: now.toISOString()
+  };
+}
+
+function sanitizePhotoContext(context = {}) {
+  return Object.fromEntries(Object.entries(context)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => [key, String(value).slice(0, 120)]));
+}
+
+async function getOrCreateDirectory(parent, name) {
+  return parent.getDirectoryHandle(safeFileName(name), { create: true });
+}
+
+function makeAlbumPhotoFileName(name, photoId) {
+  const safeName = safeFileName(name || "photo");
+  const dot = safeName.lastIndexOf(".");
+  const hasExtension = dot > 0 && dot < safeName.length - 1;
+  const base = hasExtension ? safeName.slice(0, dot) : safeName;
+  const ext = hasExtension ? safeName.slice(dot) : "";
+  return `${photoId}-${base}`.slice(0, Math.max(16, 120 - ext.length)) + ext;
+}
+
+function makePreviewFileName(name, photoId) {
+  const safeName = safeFileName(name || "photo");
+  const dot = safeName.lastIndexOf(".");
+  const base = dot > 0 ? safeName.slice(0, dot) : safeName;
+  return `${photoId}-${base}-preview.jpg`;
+}
+
+async function createPreviewBlob(file) {
+  if (!file.type?.startsWith("image/")) return file;
+  const image = await loadImageElement(URL.createObjectURL(file), { revoke: true });
+  const scale = Math.min(1, PHOTO_PREVIEW_MAX_SIDE / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+  const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
+  const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0, width, height);
+  return await canvasToBlob(canvas, PHOTO_PREVIEW_TYPE, PHOTO_PREVIEW_QUALITY);
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("预览图生成失败"));
+    }, type, quality);
   });
 }
 
@@ -4086,8 +4275,8 @@ function saveSelectedBuildingMeta(options = {}) {
 async function addPhotosToSelectedBuilding(files) {
   const building = getSelectedBuildingMemory();
   if (!building) return;
-  const records = await filesToResourceRecords(files);
-  for (const record of records) building.photos.push(createPhotoFromResource(record));
+  const photos = await filesToPhotoRecords(files, { kind: "building", buildingId: building.id });
+  for (const photo of photos) building.photos.push(photo);
   building.activePhotoIndex = Math.max(0, building.photos.length - 1);
   const photo = building.photos[building.activePhotoIndex] || null;
   state.gameData.selectedBuildingPhotoId = photo?.id || "";
@@ -4304,8 +4493,8 @@ function saveSelectedRoom(options = {}) {
 async function addPhotosToSelectedRoom(files) {
   const room = getSelectedRoom();
   if (!room) return;
-  const records = await filesToResourceRecords(files);
-  for (const record of records) room.photos.push(createPhotoFromResource(record));
+  const photos = await filesToPhotoRecords(files, { kind: "venue", buildingId: state.gameData.location.buildingId, roomId: room.id });
+  for (const photo of photos) room.photos.push(photo);
   room.activePhotoIndex = Math.max(0, room.photos.length - 1);
   room.updatedAt = new Date().toISOString();
   markGameDirty();
@@ -4377,8 +4566,8 @@ function selectItem(itemId) {
 async function addPhotosToSelectedItem(files) {
   const item = getSelectedItem();
   if (!item) return;
-  const records = await filesToResourceRecords(files);
-  for (const record of records) item.photos.push(createPhotoFromResource(record));
+  const photos = await filesToPhotoRecords(files, { kind: "item", buildingId: state.gameData.location.buildingId, roomId: state.gameData.selectedRoomId, itemId: item.id });
+  for (const photo of photos) item.photos.push(photo);
   item.activePhotoIndex = Math.max(0, item.photos.length - 1);
   item.updatedAt = new Date().toISOString();
   markGameDirty();
@@ -4498,8 +4687,7 @@ function selectPerson(personId) {
 async function setSelectedPersonPhoto(file) {
   const person = getSelectedPerson();
   if (!person) return;
-  const record = await blobToResourceRecord(file, file.name || "person");
-  person.photo = createPhotoFromResource(record);
+  person.photo = await createPhotoFromFile(file, { kind: "person", buildingId: state.gameData.location.buildingId, roomId: state.gameData.selectedRoomId, personId: person.id });
   person.updatedAt = new Date().toISOString();
   markGameDirty();
   renderGamePanel({ force: true });
@@ -4513,8 +4701,7 @@ async function setPlayerPortraitFromDorm(file) {
     setGameNotice("请先在寝室里选择自己");
     return;
   }
-  const record = await blobToResourceRecord(file, file.name || "portrait");
-  const photo = createPhotoFromResource(record);
+  const photo = await createPhotoFromFile(file, { kind: "portrait", buildingId: building.id, roomId: room.id, personId: person.id });
   state.gameData.player.portrait = photo;
   person.portrait = photo;
   person.updatedAt = new Date().toISOString();
@@ -4591,7 +4778,10 @@ function toggleGameInfoPanel(forceOpen = null) {
   const open = forceOpen === null ? els.gameInfoPanel.hidden : Boolean(forceOpen);
   els.gameInfoPanel.hidden = !open;
   els.gameInfoButton.setAttribute("aria-expanded", String(open));
-  if (open) void refreshStatsPanel();
+  if (open) {
+    renderAlbumStatus();
+    void refreshStatsPanel();
+  }
 }
 
 async function initGlobalStats() {
@@ -8604,7 +8794,25 @@ function normalizePhotoRecord(source) {
       data: resource.data || "",
       buffer: resource.buffer || null
     },
+    original: normalizePhotoOriginal(source.original),
     createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString()
+  };
+}
+
+function normalizePhotoOriginal(source) {
+  if (!source || typeof source !== "object") return null;
+  if (source.storage !== "local-folder" || typeof source.relativePath !== "string" || !source.relativePath) return null;
+  return {
+    storage: "local-folder",
+    albumRoot: typeof source.albumRoot === "string" ? source.albumRoot : "",
+    relativePath: source.relativePath,
+    name: typeof source.name === "string" ? source.name : "",
+    type: typeof source.type === "string" ? source.type : "",
+    size: Number.isFinite(Number(source.size)) ? Number(source.size) : 0,
+    lastModified: Number.isFinite(Number(source.lastModified)) ? Number(source.lastModified) : null,
+    schoolId: typeof source.schoolId === "string" ? source.schoolId : "",
+    context: source.context && typeof source.context === "object" ? sanitizePhotoContext(source.context) : {},
+    savedAt: typeof source.savedAt === "string" ? source.savedAt : ""
   };
 }
 
@@ -9044,6 +9252,172 @@ function createId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function isAlbumModeSupported() {
+  return typeof window.showDirectoryPicker === "function";
+}
+
+async function loadAlbumSettings() {
+  state.album.supported = isAlbumModeSupported();
+  if (!state.db || !state.album.supported) {
+    state.album = {
+      ...state.album,
+      handle: null,
+      enabled: false,
+      permission: state.album.supported ? "prompt" : "unsupported",
+      rootName: "",
+      status: state.album.supported ? "not-set" : "unsupported",
+      message: state.album.supported ? "还没有设置相册库。" : "当前浏览器不支持本地相册库，照片会存入浏览器。"
+    };
+    renderAlbumStatus();
+    return;
+  }
+  const settings = await getStoreValue(APP_SETTINGS_STORE, ALBUM_SETTINGS_KEY).catch(() => null);
+  const handle = settings?.handle || null;
+  if (!handle) {
+    state.album = {
+      ...state.album,
+      handle: null,
+      enabled: false,
+      permission: "prompt",
+      rootName: "",
+      status: "not-set",
+      message: "还没有设置相册库。"
+    };
+    renderAlbumStatus();
+    return;
+  }
+  const permission = await queryAlbumPermission(handle);
+  state.album = {
+    ...state.album,
+    handle,
+    enabled: permission === "granted",
+    permission,
+    rootName: settings.rootName || handle.name || "相册库",
+    status: permission === "granted" ? "connected" : "needs-permission",
+    message: permission === "granted" ? "原图会保存到本机相册库。" : "浏览器需要重新授权相册库。"
+  };
+  renderAlbumStatus();
+}
+
+async function saveAlbumSettings() {
+  if (!state.db) return;
+  const value = state.album.handle
+    ? {
+        version: 1,
+        handle: state.album.handle,
+        rootName: state.album.rootName || state.album.handle.name || "相册库",
+        updatedAt: new Date().toISOString()
+      }
+    : null;
+  if (value) await putStoreValue(APP_SETTINGS_STORE, ALBUM_SETTINGS_KEY, value);
+  else await deleteStoreValue(APP_SETTINGS_STORE, ALBUM_SETTINGS_KEY);
+}
+
+async function queryAlbumPermission(handle) {
+  if (!handle || typeof handle.queryPermission !== "function") return "denied";
+  try {
+    return await handle.queryPermission({ mode: "readwrite" });
+  } catch (error) {
+    console.warn("相册库权限检测失败:", error);
+    return "denied";
+  }
+}
+
+async function requestAlbumPermission(handle) {
+  if (!handle) return "denied";
+  if (typeof handle.requestPermission !== "function") return queryAlbumPermission(handle);
+  try {
+    return await handle.requestPermission({ mode: "readwrite" });
+  } catch (error) {
+    console.warn("相册库授权失败:", error);
+    return "denied";
+  }
+}
+
+async function chooseAlbumFolder() {
+  if (!isAlbumModeSupported()) {
+    state.album.supported = false;
+    state.album.status = "unsupported";
+    state.album.message = "当前浏览器不支持本地相册库，照片会存入浏览器。";
+    renderAlbumStatus();
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    const permission = await requestAlbumPermission(handle);
+    state.album = {
+      ...state.album,
+      supported: true,
+      handle,
+      enabled: permission === "granted",
+      permission,
+      rootName: handle.name || "相册库",
+      status: permission === "granted" ? "connected" : "needs-permission",
+      message: permission === "granted" ? "相册库已连接，原图会保存到本机文件夹。" : "没有获得写入权限，暂时使用浏览器存储。"
+    };
+    await saveAlbumSettings();
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      console.warn("选择相册库失败:", error);
+      state.album.message = "相册库设置失败，暂时使用浏览器存储。";
+    }
+  }
+  renderAlbumStatus();
+}
+
+async function reconnectAlbumFolder() {
+  if (!state.album.handle) {
+    await chooseAlbumFolder();
+    return;
+  }
+  const permission = await requestAlbumPermission(state.album.handle);
+  state.album.enabled = permission === "granted";
+  state.album.permission = permission;
+  state.album.status = permission === "granted" ? "connected" : "needs-permission";
+  state.album.message = permission === "granted" ? "相册库已重新授权。" : "仍未获得相册库写入权限。";
+  await saveAlbumSettings();
+  renderAlbumStatus();
+}
+
+async function forgetAlbumFolder() {
+  state.album = {
+    ...state.album,
+    handle: null,
+    enabled: false,
+    permission: state.album.supported ? "prompt" : "unsupported",
+    rootName: "",
+    status: state.album.supported ? "not-set" : "unsupported",
+    message: state.album.supported ? "已关闭相册库，之后照片会存入浏览器。" : "当前浏览器不支持本地相册库。"
+  };
+  await saveAlbumSettings();
+  renderAlbumStatus();
+}
+
+function renderAlbumStatus() {
+  if (!els.albumStatus || !els.albumDescription) return;
+  const album = state.album;
+  const labels = {
+    unsupported: "不支持",
+    "not-set": "未设置",
+    "needs-permission": "需授权",
+    connected: "已连接",
+    checking: "检测中"
+  };
+  els.albumStatus.textContent = labels[album.status] || "未设置";
+  els.albumStatus.dataset.status = album.status || "not-set";
+  els.albumDescription.textContent = album.message || "原图可保存到本机文件夹，游戏内只保留预览图。";
+  if (els.albumChooseButton) {
+    els.albumChooseButton.disabled = !album.supported;
+    els.albumChooseButton.textContent = album.handle ? "更换相册" : "设置相册";
+  }
+  if (els.albumReconnectButton) {
+    els.albumReconnectButton.disabled = !album.supported || !album.handle;
+  }
+  if (els.albumForgetButton) {
+    els.albumForgetButton.disabled = !album.handle;
+  }
+}
+
 function openDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -9063,6 +9437,9 @@ function openDatabase() {
       }
       if (!db.objectStoreNames.contains(GAME_DATA_STORE)) {
         db.createObjectStore(GAME_DATA_STORE);
+      }
+      if (!db.objectStoreNames.contains(APP_SETTINGS_STORE)) {
+        db.createObjectStore(APP_SETTINGS_STORE);
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -9662,6 +10039,13 @@ function renderToText() {
         structure: state.showStructureLayer
       },
       visibleWorkspaces: [...els.editorWorkspaces].filter((panel) => !panel.hidden).map((panel) => panel.dataset.editorPanel)
+    },
+    album: {
+      supported: state.album.supported,
+      enabled: state.album.enabled,
+      status: state.album.status,
+      permission: state.album.permission,
+      rootName: state.album.rootName || ""
     },
     game: getGameTextState(),
     layout: {
