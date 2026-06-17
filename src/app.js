@@ -22,6 +22,8 @@ const MOVE_SLIDE_SAMPLE_RADIUS = 8;
 const MOVE_SLIDE_MIN_DISTANCE = 0.5;
 const MOVE_TARGET_STOP_DISTANCE = 6;
 const MOVE_TARGET_SEARCH_RADIUS = 120;
+const MOVE_TARGET_START_SAMPLE_DISTANCE = 18;
+const MOVE_TARGET_MAX_FAILED_FRAMES = 10;
 const GAME_CLICK_MOVE_TOLERANCE = 14;
 const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
@@ -32,6 +34,7 @@ const EXPLORATION_MAX_GRID_SIZE = 240;
 const PHOTO_PREVIEW_MAX_SIDE = 1600;
 const PHOTO_PREVIEW_QUALITY = 0.82;
 const PHOTO_PREVIEW_TYPE = "image/jpeg";
+const MAP_ALPHA_MASK_MAX_SIDE = 2048;
 const STATS_COUNTER_RPC_URL = "https://ypefmpeekfucmarbbdov.supabase.co";
 const STATS_COUNTER_RPC_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlwZWZtcGVla2Z1Y21hcmJiZG92Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5NTA2NTYsImV4cCI6MjA4MTUyNjY1Nn0.XTOQNFuuwfu9nwDTnO9-NEqlzZnzdCVnEmYEJh0rXf8";
 const STATS_COUNTER_IDS = {
@@ -414,6 +417,7 @@ const state = {
   photoImageCache: new Map(),
   movementKeys: new Set(),
   moveTarget: null,
+  moveTargetFailedFrames: 0,
   lastGameFrameTime: 0,
   gameLoopRunning: false,
   gameSaveTimer: null,
@@ -492,6 +496,7 @@ const state = {
   interactionPreviewCanvas: document.createElement("canvas"),
   mapAlphaSampleCanvas: document.createElement("canvas"),
   mapAlphaPixelCache: new Map(),
+  mapAlphaMask: null,
   interactionPreviewScale: 1,
   interactionFastUntil: 0,
   interactionIdleTimer: null,
@@ -692,6 +697,7 @@ async function init() {
         ctx.fillRect(80, 70, 440, 260);
         state.mapImage = await loadImageElement(canvas.toDataURL("image/png"));
         state.mapNaturalSize = { width: 600, height: 400 };
+        rebuildMapAlphaMask();
         initializeGameForCurrentMap({ resetPlayer: true });
         state.editorEnabled = true;
         setEditorMode("structure");
@@ -721,6 +727,8 @@ async function init() {
       renderGamePanel,
       setMoveTargetFromClick,
       findMoveTargetNear,
+      findStartableMoveTarget,
+      resolvePlayerMove,
       screenToImage,
       queueDraw
     };
@@ -2412,6 +2420,7 @@ function gameLoop(now) {
 function updateGameMovement(dt) {
   if (state.moveTarget && !state.movementKeys.size && distance(state.gameData.player, state.moveTarget) <= MOVE_TARGET_STOP_DISTANCE) {
     state.moveTarget = null;
+    state.moveTargetFailedFrames = 0;
   }
   const vector = getMovementVector();
   if (!vector.x && !vector.y) return false;
@@ -2419,14 +2428,33 @@ function updateGameMovement(dt) {
   const speed = (Number(player.walkSpeed) || DEFAULT_WALK_SPEED) * WALK_SPEED_FACTOR;
   const next = resolvePlayerMove(player, vector, speed * dt);
   if (!next) {
-    if (state.moveTarget && !state.movementKeys.size) state.moveTarget = null;
+    if (state.moveTarget && !state.movementKeys.size) {
+      const adjustedTarget = findStartableMoveTarget(state.moveTarget, player);
+      if (adjustedTarget && distance(adjustedTarget, state.moveTarget) > 0.5) {
+        state.moveTarget = adjustedTarget;
+        state.moveTargetFailedFrames = 0;
+        startGameLoop();
+        queueDraw();
+        return false;
+      }
+      state.moveTargetFailedFrames += 1;
+      if (state.moveTargetFailedFrames <= MOVE_TARGET_MAX_FAILED_FRAMES) {
+        startGameLoop();
+        return false;
+      }
+      state.moveTarget = null;
+      state.moveTargetFailedFrames = 0;
+      queueDraw();
+    }
     return false;
   }
   markMapInteraction(90);
+  state.moveTargetFailedFrames = 0;
   player.x = next.x;
   player.y = next.y;
   if (state.moveTarget && !state.movementKeys.size && distance(player, state.moveTarget) <= MOVE_TARGET_STOP_DISTANCE) {
     state.moveTarget = null;
+    state.moveTargetFailedFrames = 0;
   }
   updateNearbyGameContext();
   followPlayer();
@@ -2602,6 +2630,7 @@ function handleGameKeyDown(event) {
   if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "KeyA", "KeyD", "KeyW", "KeyS"].includes(code)) return false;
   event.preventDefault();
   state.moveTarget = null;
+  state.moveTargetFailedFrames = 0;
   state.movementKeys.add(code);
   startGameLoop();
   return true;
@@ -2865,6 +2894,29 @@ function isTransparentMapPixel(point) {
   const y = clamp(Math.floor(point.y), 0, state.mapNaturalSize.height - 1);
   const key = `${x},${y}`;
   if (state.mapAlphaPixelCache.has(key)) return state.mapAlphaPixelCache.get(key);
+  const transparent = sampleMapAlphaMask(x, y) ?? sampleMapAlphaPixelSlow(x, y);
+  state.mapAlphaPixelCache.set(key, transparent);
+  return transparent;
+}
+
+function sampleMapAlphaMask(x, y) {
+  const mask = state.mapAlphaMask;
+  if (!mask?.data?.length || !mask.width || !mask.height || !mask.scale) return null;
+  const sampleX = clamp(Math.floor(x * mask.scale), 0, mask.width - 1);
+  const sampleY = clamp(Math.floor(y * mask.scale), 0, mask.height - 1);
+  const transparent = mask.data[sampleY * mask.width + sampleX] < 16;
+  for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+    for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+      const nx = sampleX + offsetX;
+      const ny = sampleY + offsetY;
+      if (nx < 0 || ny < 0 || nx >= mask.width || ny >= mask.height) continue;
+      if ((mask.data[ny * mask.width + nx] < 16) !== transparent) return null;
+    }
+  }
+  return transparent;
+}
+
+function sampleMapAlphaPixelSlow(x, y) {
   const canvas = state.mapAlphaSampleCanvas || (state.mapAlphaSampleCanvas = document.createElement("canvas"));
   canvas.width = 1;
   canvas.height = 1;
@@ -2872,9 +2924,7 @@ function isTransparentMapPixel(point) {
   if (!ctx) return false;
   ctx.clearRect(0, 0, 1, 1);
   ctx.drawImage(state.mapImage, x, y, 1, 1, 0, 0, 1, 1);
-  const transparent = ctx.getImageData(0, 0, 1, 1).data[3] < 16;
-  state.mapAlphaPixelCache.set(key, transparent);
-  return transparent;
+  return ctx.getImageData(0, 0, 1, 1).data[3] < 16;
 }
 
 function findNearbyWalkablePoint(origin, options = {}) {
@@ -2959,6 +3009,7 @@ function clearMapRenderCache() {
   state.mapAlphaSampleCanvas.width = 1;
   state.mapAlphaSampleCanvas.height = 1;
   state.mapAlphaPixelCache.clear();
+  state.mapAlphaMask = null;
   state.interactionPreviewScale = 1;
   state.mapRenderWarm = false;
   clearExplorationCache();
@@ -5310,6 +5361,30 @@ function rebuildInteractionPreview() {
   ctx.imageSmoothingQuality = "low";
   ctx.clearRect(0, 0, width, height);
   ctx.drawImage(state.mapImage, 0, 0, width, height);
+  rebuildMapAlphaMask();
+}
+
+function rebuildMapAlphaMask() {
+  state.mapAlphaMask = null;
+  state.mapAlphaPixelCache.clear();
+  if (!state.mapImage || !state.mapNaturalSize.width || !state.mapNaturalSize.height) return;
+  const scale = Math.min(1, MAP_ALPHA_MASK_MAX_SIDE / Math.max(state.mapNaturalSize.width, state.mapNaturalSize.height));
+  const width = Math.max(1, Math.round(state.mapNaturalSize.width * scale));
+  const height = Math.max(1, Math.round(state.mapNaturalSize.height * scale));
+  const canvas = state.mapAlphaSampleCanvas || (state.mapAlphaSampleCanvas = document.createElement("canvas"));
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return;
+  ctx.clearRect(0, 0, width, height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(state.mapImage, 0, 0, width, height);
+  const imageData = ctx.getImageData(0, 0, width, height).data;
+  const alpha = new Uint8Array(width * height);
+  for (let index = 0, pixel = 0; index < imageData.length; index += 4, pixel += 1) {
+    alpha[pixel] = imageData[index + 3];
+  }
+  state.mapAlphaMask = { width, height, scale, data: alpha };
 }
 
 function warmupMapRendering() {
@@ -6346,6 +6421,7 @@ function handleGameCanvasClick(imagePoint) {
   const nearbySpot = clickedSpot && state.currentNearbyInteractionTargets.find((target) => target.key === clickedSpot.key);
   if (nearbySpot) {
     state.moveTarget = null;
+    state.moveTargetFailedFrames = 0;
     state.selectedNearbyInteractionKey = clickedSpot.key;
     state.defaultPhotoSpotInteractionKey = clickedSpot.key;
     state.gameData.selectedPhotoSpotId = clickedSpot.id;
@@ -6362,6 +6438,7 @@ function handleGameCanvasClick(imagePoint) {
     : null;
   if (target) {
     state.moveTarget = null;
+    state.moveTargetFailedFrames = 0;
     state.selectedNearbyInteractionKey = target.key;
     state.gameData.selectedBuildingId = target.id;
     state.selectedSpotPhotoForEditId = "";
@@ -6379,10 +6456,12 @@ function setMoveTargetFromClick(imagePoint) {
   const target = findMoveTargetNear(imagePoint);
   if (!target) {
     state.moveTarget = null;
+    state.moveTargetFailedFrames = 0;
     queueDraw();
     return;
   }
   state.moveTarget = target;
+  state.moveTargetFailedFrames = 0;
   state.movementKeys.clear();
   updateNearbyGameContext();
   renderGamePanel();
@@ -6392,11 +6471,14 @@ function setMoveTargetFromClick(imagePoint) {
 
 function findMoveTargetNear(point) {
   const clamped = clampImagePoint(point);
-  if (canPlayerMoveTo(clamped)) return clamped;
-  return findNearestWalkableClickTarget(clamped, MOVE_TARGET_SEARCH_RADIUS);
+  const player = state.gameData.player;
+  if (isStartableMoveTarget(clamped, player)) return clamped;
+  const lineTarget = findWalkableTargetAlongPlayerLine(player, clamped);
+  if (lineTarget) return lineTarget;
+  return findNearestWalkableClickTarget(clamped, MOVE_TARGET_SEARCH_RADIUS, player);
 }
 
-function findNearestWalkableClickTarget(point, maxRadius) {
+function findNearestWalkableClickTarget(point, maxRadius, origin = state.gameData.player) {
   const step = Math.max(8, getPlayerCollisionRadius() * 0.5);
   let best = null;
   let bestDistance = Infinity;
@@ -6409,11 +6491,43 @@ function findNearestWalkableClickTarget(point, maxRadius) {
         y: point.y + Math.sin(angle) * radius
       });
       const d = distance(point, candidate);
-      if (d >= bestDistance || !canPlayerMoveTo(candidate)) continue;
+      if (d >= bestDistance || !isStartableMoveTarget(candidate, origin)) continue;
       best = candidate;
       bestDistance = d;
     }
     if (best) return best;
+  }
+  return null;
+}
+
+function isStartableMoveTarget(target, origin = state.gameData.player) {
+  if (!canPlayerMoveTo(target)) return false;
+  if (!origin || distance(origin, target) <= MOVE_TARGET_STOP_DISTANCE) return true;
+  const direction = normalizeVector({ x: target.x - origin.x, y: target.y - origin.y });
+  if (!direction) return true;
+  return Boolean(resolvePlayerMove(origin, direction, MOVE_TARGET_START_SAMPLE_DISTANCE));
+}
+
+function findStartableMoveTarget(target, origin = state.gameData.player) {
+  if (isStartableMoveTarget(target, origin)) return target;
+  return findWalkableTargetAlongPlayerLine(origin, target)
+    || findNearestWalkableClickTarget(target, Math.min(MOVE_TARGET_SEARCH_RADIUS, 64), origin);
+}
+
+function findWalkableTargetAlongPlayerLine(origin, target) {
+  if (!origin) return null;
+  const dx = target.x - origin.x;
+  const dy = target.y - origin.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= MOVE_TARGET_STOP_DISTANCE) return isStartableMoveTarget(target, origin) ? target : null;
+  const step = Math.max(8, getPlayerCollisionRadius(origin) * 0.5);
+  for (let remaining = length; remaining >= MOVE_TARGET_STOP_DISTANCE; remaining -= step) {
+    const t = remaining / length;
+    const candidate = clampImagePoint({
+      x: origin.x + dx * t,
+      y: origin.y + dy * t
+    });
+    if (isStartableMoveTarget(candidate, origin)) return candidate;
   }
   return null;
 }
