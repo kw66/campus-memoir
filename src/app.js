@@ -47,6 +47,7 @@ const INTERIOR_ROOM_CARD_GAP = 16;
 const EXPLORATION_TARGET_GRID_COUNT = 52;
 const EXPLORATION_MIN_GRID_SIZE = 90;
 const EXPLORATION_MAX_GRID_SIZE = 240;
+const EXPLORATION_TRANSPARENT_SKIP_RATIO = 0.5;
 const PHOTO_PREVIEW_MAX_SIDE = 1600;
 const PHOTO_PREVIEW_QUALITY = 0.82;
 const PHOTO_PREVIEW_TYPE = "image/jpeg";
@@ -4612,6 +4613,7 @@ function createExplorationCacheKey(school, editData, gameData) {
     state.mapNaturalSize.width,
     state.mapNaturalSize.height,
     editData.cropPolygon?.length || 0,
+    EXPLORATION_TRANSPARENT_SKIP_RATIO,
     structures,
     spots
   ].join(";");
@@ -4640,8 +4642,7 @@ function calculateExplorationProgress(editData, gameData) {
     for (let col = 0; col < columns; col++) {
       const index = indexFor(col, row);
       const bounds = getExplorationCellBounds(col, row, gridSize, width, height);
-      if (explorationCellHasTransparentPixel(bounds)) continue;
-      if (!explorationCellHasVisibleMap(bounds)) continue;
+      if (explorationCellTransparentRatio(bounds) > EXPLORATION_TRANSPARENT_SKIP_RATIO) continue;
       cells[index].valid = true;
     }
   }
@@ -4693,37 +4694,41 @@ function getExplorationCellBounds(col, row, gridSize, width, height) {
   };
 }
 
-function explorationCellHasTransparentPixel(bounds) {
-  if (explorationCellHasTransparentMaskPixel(bounds)) return true;
-  return getExplorationCellSamplePoints(bounds).some((point) => !isPointOnVisibleMap(point));
+function explorationCellTransparentRatio(bounds) {
+  const maskRatio = explorationCellTransparentMaskRatio(bounds);
+  if (maskRatio !== null) return maskRatio;
+  const points = getExplorationCellSamplePoints(bounds);
+  if (!points.length) return 1;
+  const transparentCount = points.filter((point) => !isPointOnVisibleMap(point)).length;
+  return transparentCount / points.length;
 }
 
-function explorationCellHasTransparentMaskPixel(bounds) {
+function explorationCellTransparentMaskRatio(bounds) {
   const mask = state.mapAlphaMask;
-  if (!mask?.data?.length || !mask.width || !mask.height || !mask.scale) return false;
+  if (!mask?.data?.length || !mask.width || !mask.height || !mask.scale) return null;
   const editData = getSelectedEditData();
   const cropPolygon = editData.cropPolygon?.length >= 3 ? editData.cropPolygon : null;
   const left = clamp(Math.floor(bounds.left * mask.scale), 0, mask.width - 1);
   const right = clamp(Math.ceil(bounds.right * mask.scale) - 1, 0, mask.width - 1);
   const top = clamp(Math.floor(bounds.top * mask.scale), 0, mask.height - 1);
   const bottom = clamp(Math.ceil(bounds.bottom * mask.scale) - 1, 0, mask.height - 1);
+  let total = 0;
+  let transparent = 0;
   for (let y = top; y <= bottom; y += 1) {
     for (let x = left; x <= right; x += 1) {
-      if (mask.data[y * mask.width + x] < 16) return true;
+      total += 1;
+      let isTransparent = mask.data[y * mask.width + x] < 16;
       if (cropPolygon) {
         const point = {
           x: (x + 0.5) / mask.scale,
           y: (y + 0.5) / mask.scale
         };
-        if (!pointInPolygon(point, cropPolygon)) return true;
+        if (!pointInPolygon(point, cropPolygon)) isTransparent = true;
       }
+      if (isTransparent) transparent += 1;
     }
   }
-  return false;
-}
-
-function explorationCellHasVisibleMap(bounds) {
-  return getExplorationCellSamplePoints(bounds).some(isPointOnVisibleMap);
+  return total ? transparent / total : 1;
 }
 
 function getExplorationCellSamplePoints(bounds) {
