@@ -4299,31 +4299,20 @@ function getMapMarkerPhotoEntries(entity, options = {}) {
 
 function getBuildingMapPhotoEntries(building) {
   if (!building) return [];
-  const entries = [
-    ...getMapMarkerPhotoEntries(building, { label: "楼", source: "building" })
-  ];
   for (const room of building.rooms || []) {
-    entries.push(...getMapMarkerPhotoEntries(room, {
+    const photo = getFirstPhoto(room);
+    if (photo) return [{
+      photo,
       label: getRoomDisplayName(room),
       source: "room"
-    }));
-    for (const item of room.items || []) {
-      entries.push(...getMapMarkerPhotoEntries(item, {
-        label: getItemDisplayName(item),
-        source: "item"
-      }));
-    }
-    for (const person of room.people || []) {
-      const photo = person.photo || person.portrait;
-      if (photo) entries.push({
-        photo,
-        label: getPersonDisplayName(person),
-        source: "person"
-      });
-    }
+    }];
   }
-  const limit = clamp(Math.floor(Number(building.mapPhotoLimit) || DEFAULT_BUILDING_MAP_PHOTO_LIMIT), 1, 12);
-  return entries.slice(0, limit);
+  const buildingPhoto = getFirstPhoto(building);
+  return buildingPhoto ? [{
+    photo: buildingPhoto,
+    label: "楼",
+    source: "building"
+  }] : [];
 }
 
 function getMapMarkerGalleryLayout(entries, options = {}) {
@@ -5008,10 +4997,6 @@ function renderCampusInteractionHtml(region, building) {
       <div class="game-card-head"><strong>${escapeHtml(getStructureInteractionLabel(region))}</strong><span>${escapeHtml(TYPE_STYLES[region?.type || "custom"]?.label || "对象")}</span></div>
       <div class="building-editor" ${hasBuilding ? "" : "hidden"}>
         <input class="game-input" data-game-field="buildingName" type="text" value="${escapeAttr(building?.customName || region?.name || "")}" placeholder="建筑名称">
-        <label class="compact-field">
-          <span>地图显示</span>
-          <input class="game-input" data-game-field="buildingMapPhotoLimit" type="number" min="1" max="12" step="1" value="${escapeAttr(building?.mapPhotoLimit || DEFAULT_BUILDING_MAP_PHOTO_LIMIT)}">
-        </label>
         <div class="game-actions dense photo-actions">
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
@@ -5034,7 +5019,7 @@ function renderEntranceListHtml(region, building) {
   if (!entries.length) return `<span class="muted-inline">还没有入口</span>`;
   return entries.map(({ spot }, index) => `
     <span class="entrance-row">
-      <span>${escapeHtml(getPhotoSpotDisplayName(spot) || `入口${index + 1}`)}${spot.photos.length ? " 有图" : ""}</span>
+      <span>${escapeHtml(getPhotoSpotDisplayName(spot) || `入口${index + 1}`)}</span>
       <button class="secondary-button compact" type="button" data-game-action="unlinkPhotoSpotEntrance" data-spot-id="${escapeAttr(spot.id)}">取消绑定</button>
     </span>
   `).join("");
@@ -5174,7 +5159,7 @@ function onGamePanelInput(event) {
   const field = event.target.closest("[data-game-field]");
   if (!field) return;
   const name = field.dataset.gameField;
-  if (name === "buildingName" || name === "buildingMapPhotoLimit") {
+  if (name === "buildingName") {
     saveSelectedBuildingMeta({ defer: true, silent: true });
   } else if (name === "photoSpotName" || name === "photoSpotDate") {
     saveActivePhotoSpotMeta({ defer: true, silent: true });
@@ -5807,10 +5792,8 @@ function saveSelectedBuildingMeta(options = {}) {
   const region = getStructureRegionById(state.gameData.selectedBuildingId);
   if (!building || !region) return;
   const nameInput = els.gamePanel.querySelector('[data-game-field="buildingName"]');
-  const limitInput = els.gamePanel.querySelector('[data-game-field="buildingMapPhotoLimit"]');
   const name = nameInput?.value?.trim() || "";
   building.customName = name;
-  building.mapPhotoLimit = clamp(Math.floor(Number(limitInput?.value) || DEFAULT_BUILDING_MAP_PHOTO_LIMIT), 1, 12);
   region.name = name || region.name || "";
   building.updatedAt = new Date().toISOString();
   commitStructureDataChange();
@@ -9549,11 +9532,12 @@ function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
     drawMapMarkerGallery(ctx, gallery, screen.x, cursorY + 5, { selected, showLabels: false });
     cursorY += gallery.height + 12;
   }
-  if (!hasGallery && people.length) {
+  if (people.length) {
     drawPeopleMarkerList(ctx, people, screen.x, cursorY + 4, {
       maxWidth: width - 12,
       compact: true,
-      selected
+      selected,
+      limit: people.length
     });
   }
   ctx.restore();
