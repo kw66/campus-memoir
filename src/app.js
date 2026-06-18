@@ -5117,7 +5117,6 @@ function renderInteriorPanelHtml(building, room, item, person) {
           <input class="game-input" data-game-field="roomName" type="text" value="${escapeAttr(room?.name || "")}" placeholder="场地名称">
           <select class="game-input" data-game-field="roomType">${roomTypeOptions}</select>
           <select class="game-input" data-game-field="roomRelation" ${room?.type === "寝室" ? "" : "hidden"}>${roomRelationOptions}</select>
-          <button class="secondary-button" type="button" data-game-action="saveRoom">保存</button>
         </div>
         <div class="mini-photo wide${roomPhotoUrl ? " has-photo" : ""}">
           ${roomPhotoUrl ? `<img src="${roomPhotoUrl}" alt="">` : `<span>场地照片</span>`}
@@ -5149,7 +5148,6 @@ function renderInteriorPanelHtml(building, room, item, person) {
             <button class="secondary-button" type="button" data-game-action="uploadItemPhoto">相册</button>
             <button class="secondary-button" type="button" data-game-action="prevItemPhoto" ${!item || item.photos.length < 2 ? "disabled" : ""}>上一张</button>
             <button class="secondary-button" type="button" data-game-action="nextItemPhoto" ${!item || item.photos.length < 2 ? "disabled" : ""}>下一张</button>
-            <button class="secondary-button" type="button" data-game-action="saveItem">保存</button>
             <button class="secondary-button" type="button" data-game-action="interactItem">互动</button>
             <button class="secondary-button danger" type="button" data-game-action="deleteItemPhoto" ${!item || !item.photos.length ? "disabled" : ""}>删图</button>
             <button class="secondary-button danger" type="button" data-game-action="deleteItem">删除</button>
@@ -5174,7 +5172,6 @@ function renderInteriorPanelHtml(building, room, item, person) {
           <div class="game-actions dense">
             <button class="secondary-button" type="button" data-game-action="capturePersonPhoto">拍照</button>
             <button class="secondary-button" type="button" data-game-action="uploadPersonPhoto">相册</button>
-            <button class="secondary-button" type="button" data-game-action="savePerson">保存</button>
             <button class="secondary-button" type="button" data-game-action="sayHello">你好</button>
             <button class="secondary-button danger" type="button" data-game-action="deletePerson">删人物</button>
           </div>
@@ -5294,9 +5291,6 @@ function handleGameAction(action, button) {
     case "selectRoom":
       selectRoom(button.dataset.roomId || "");
       return;
-    case "saveRoom":
-      saveSelectedRoom();
-      return;
     case "captureRoomPhoto":
       els.roomCameraInput.click();
       return;
@@ -5347,9 +5341,6 @@ function handleGameAction(action, button) {
     case "nextItemPhoto":
       cycleItemPhoto(1);
       return;
-    case "saveItem":
-      saveSelectedItem();
-      return;
     case "interactItem":
       interactWithSelectedItem();
       return;
@@ -5373,9 +5364,6 @@ function handleGameAction(action, button) {
       return;
     case "uploadPersonPhoto":
       els.personPhotoInput.click();
-      return;
-    case "savePerson":
-      saveSelectedPerson();
       return;
     case "sayHello":
       sayHelloToSelectedPerson();

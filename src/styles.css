@@ -1033,7 +1033,7 @@ textarea.game-input {
 }
 
 .room-fields {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .room-fields > .game-input:first-child {
