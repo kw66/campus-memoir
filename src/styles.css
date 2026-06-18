@@ -820,10 +820,19 @@ button:disabled {
 }
 
 .entrance-row {
-  display: inline-flex;
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
   cursor: default;
+}
+
+.entrance-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .entrance-target {
@@ -858,12 +867,17 @@ button:disabled {
 
 .building-editor {
   min-height: 0;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
 .building-photo-list {
   min-height: 0;
+}
+
+.building-photo-list .list-empty {
+  min-height: 42px;
 }
 
 .game-input {
@@ -936,6 +950,10 @@ textarea.game-input {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  max-height: 92px;
+  overflow: auto;
 }
 
 .interior-card {
