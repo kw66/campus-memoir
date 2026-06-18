@@ -454,6 +454,14 @@ const state = {
   selectedSpotPhotoForEditId: "",
   selectedBuildingPhotoForEditId: "",
   gamePointerDown: null,
+  gameTouches: new Map(),
+  gamePinch: {
+    active: false,
+    startDistance: 0,
+    startScale: 1,
+    anchor: null,
+    moved: false
+  },
   lastGamePointerClickHandledAt: 0,
   editorEnabled: false,
   editorNotice: "",
@@ -7271,6 +7279,10 @@ function onPointerMove(event) {
 
 function onPointerLeave() {
   if (!state.editorEnabled) {
+    if (!state.gamePinch.active) {
+      state.gameTouches.clear();
+      state.gamePointerDown = null;
+    }
     updateCanvasCursor();
     return;
   }
@@ -7351,8 +7363,12 @@ function onPointerUp(event) {
   queueDraw();
 }
 
-function onPointerCancel() {
+function onPointerCancel(event) {
   if (!state.editorEnabled) {
+    state.gameTouches.delete(event.pointerId);
+    if (!state.gameTouches.size) {
+      resetGamePinch();
+    }
     state.gamePointerDown = null;
     updateCanvasCursor();
     return;
@@ -7410,9 +7426,81 @@ function updatePinchGesture() {
   queueDraw();
 }
 
+function resetGamePinch() {
+  state.gamePinch = {
+    active: false,
+    startDistance: 0,
+    startScale: 1,
+    anchor: null,
+    moved: false
+  };
+}
+
+function startGamePinchGesture() {
+  if (isInsideBuildingView()) return;
+  const points = [...state.gameTouches.values()].slice(0, 2);
+  if (points.length < 2) return;
+  const center = {
+    x: (points[0].x + points[1].x) / 2,
+    y: (points[0].y + points[1].y) / 2
+  };
+  state.gamePinch = {
+    active: true,
+    startDistance: Math.max(1, distance(points[0], points[1])),
+    startScale: state.view.scale,
+    anchor: {
+      screen: center,
+      image: screenToImage(center.x, center.y)
+    },
+    moved: false
+  };
+  state.gamePointerDown = null;
+  clearMoveTarget();
+  markMapInteraction(160);
+  updateCanvasCursor();
+}
+
+function updateGamePinchGesture() {
+  if (isInsideBuildingView()) return;
+  const points = [...state.gameTouches.values()].slice(0, 2);
+  if (points.length < 2 || !state.gamePinch.active || !state.gamePinch.anchor) return;
+  const currentDistance = Math.max(1, distance(points[0], points[1]));
+  const factor = currentDistance / Math.max(1, state.gamePinch.startDistance);
+  const center = {
+    x: (points[0].x + points[1].x) / 2,
+    y: (points[0].y + points[1].y) / 2
+  };
+  const nextScale = clamp(state.gamePinch.startScale * factor, state.view.minScale, state.view.maxScale);
+  if (Math.abs(nextScale - state.view.scale) > 0.001 || distance(center, state.gamePinch.anchor.screen) > 1.5) {
+    state.gamePinch.moved = true;
+  }
+  const anchor = state.gamePinch.anchor.image;
+  state.view.scale = nextScale;
+  state.view.x = center.x - anchor.x * state.view.scale;
+  state.view.y = center.y - anchor.y * state.view.scale;
+  clampView();
+  markMapInteraction(120);
+  queueDraw();
+}
+
+function finishGamePinchGesture() {
+  if (state.gamePinch.active || state.gamePinch.moved) {
+    state.lastGamePointerClickHandledAt = performance.now();
+  }
+  resetGamePinch();
+  updateCanvasCursor();
+  queueDraw();
+}
+
 function handleGamePointerDown(event) {
   markMapInteraction(120);
   const point = getCanvasPoint(event);
+  state.gameTouches.set(event.pointerId, point);
+  if (state.gameTouches.size >= 2) {
+    els.mapCanvas.setPointerCapture?.(event.pointerId);
+    startGamePinchGesture();
+    return;
+  }
   const imagePoint = clampImagePoint(screenToImage(point.x, point.y));
   state.gamePointerDown = {
     pointerId: event.pointerId,
@@ -7429,6 +7517,14 @@ function handleGamePointerDown(event) {
 }
 
 function handleGamePointerMove(event, point = getCanvasPoint(event)) {
+  if (state.gameTouches.has(event.pointerId)) {
+    state.gameTouches.set(event.pointerId, point);
+  }
+  if (state.gamePinch.active || state.gameTouches.size >= 2) {
+    if (!state.gamePinch.active) startGamePinchGesture();
+    updateGamePinchGesture();
+    return;
+  }
   if (!state.gamePointerDown || state.gamePointerDown.pointerId !== event.pointerId) {
     updateCanvasCursor();
     return;
@@ -7442,8 +7538,21 @@ function handleGamePointerMove(event, point = getCanvasPoint(event)) {
 }
 
 function handleGamePointerUp(event) {
+  const wasPinching = state.gamePinch.active || state.gamePinch.moved || state.gameTouches.size >= 2;
+  state.gameTouches.delete(event.pointerId);
+  if (wasPinching) {
+    els.mapCanvas.releasePointerCapture?.(event.pointerId);
+    if (state.gameTouches.size >= 2) {
+      startGamePinchGesture();
+    } else {
+      state.gamePointerDown = null;
+      finishGamePinchGesture();
+    }
+    return;
+  }
   const pointer = state.gamePointerDown;
   if (!pointer || pointer.pointerId !== event.pointerId) return;
+  state.gameTouches.delete(event.pointerId);
   els.mapCanvas.releasePointerCapture?.(event.pointerId);
   state.lastGamePointerClickHandledAt = performance.now();
   if (!pointer.moved) {
