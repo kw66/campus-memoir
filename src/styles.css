@@ -580,7 +580,7 @@ button:disabled {
 }
 
 .game-panel.inside-building .photo-stage {
-  min-height: 96px;
+  min-height: clamp(260px, 52vh, 620px);
 }
 
 .game-card {
@@ -627,13 +627,13 @@ button:disabled {
 .photo-card {
   min-height: 0;
   flex: 1 1 auto;
-  display: grid;
-  grid-template-rows: auto auto auto minmax(260px, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
 .photo-card.entrance-card {
-  grid-template-rows: auto auto auto auto minmax(220px, 1fr) auto;
+  display: flex;
 }
 
 .spot-fields {
@@ -643,7 +643,7 @@ button:disabled {
 }
 
 .photo-stage {
-  min-height: 180px;
+  min-height: clamp(260px, 48vh, 620px);
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -676,7 +676,8 @@ button:disabled {
 }
 
 .photo-list {
-  min-height: 320px;
+  min-height: 0;
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-content: start;
@@ -690,7 +691,7 @@ button:disabled {
   position: relative;
   width: 100%;
   min-width: 0;
-  height: clamp(180px, 24vh, 260px);
+  height: clamp(220px, 30vh, 360px);
   padding: 0;
   overflow: hidden;
   border: 2px solid color-mix(in srgb, var(--line), transparent 10%);
@@ -884,7 +885,7 @@ textarea.game-input {
 }
 
 .mini-photo {
-  height: 88px;
+  min-height: clamp(220px, 38vh, 520px);
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -896,8 +897,21 @@ textarea.game-input {
   font-weight: 800;
 }
 
+.mini-photo.has-photo,
+.item-photo.has-photo,
+.person-photo.has-photo {
+  min-height: 0;
+  align-items: center;
+  justify-items: center;
+}
+
 .mini-photo.wide {
-  height: 86px;
+  min-height: clamp(280px, 50vh, 680px);
+}
+
+.mini-photo.wide.has-photo {
+  height: clamp(300px, 58vh, 720px);
+  min-height: 0;
 }
 
 .player-portrait-card {
@@ -957,14 +971,14 @@ textarea.game-input {
 .item-top,
 .person-top {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: minmax(180px, 1.1fr) minmax(0, 0.9fr);
+  gap: 10px;
 }
 
 .item-photo,
 .person-photo {
-  width: 76px;
-  height: 76px;
+  width: 100%;
+  min-height: clamp(220px, 34vh, 500px);
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -974,6 +988,11 @@ textarea.game-input {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.item-photo.has-photo,
+.person-photo.has-photo {
+  height: clamp(260px, 42vh, 560px);
 }
 
 .item-fields,
@@ -1975,8 +1994,8 @@ textarea.game-input {
   }
 
   .photo-stage {
-    min-height: 220px;
-    max-height: 42vh;
+    min-height: clamp(260px, 54vh, 520px);
+    max-height: none;
   }
 
   .spot-fields {
@@ -1984,12 +2003,12 @@ textarea.game-input {
   }
 
   .photo-list {
-    min-height: 190px;
+    min-height: 220px;
     max-height: 52vh;
   }
 
   .photo-tile {
-    height: clamp(150px, 38vh, 220px);
+    height: clamp(220px, 42vh, 360px);
   }
 
   .game-actions.dense {
@@ -2002,13 +2021,14 @@ textarea.game-input {
     grid-template-columns: 1fr;
   }
 
+  .item-top,
   .person-top {
-    grid-template-columns: 64px minmax(0, 1fr);
+    grid-template-columns: 1fr;
   }
 
+  .item-photo,
   .person-photo {
-    width: 64px;
-    height: 64px;
+    min-height: 260px;
   }
 
   .dialog-grid {

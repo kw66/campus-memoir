@@ -35,6 +35,8 @@ const GAME_CLICK_MOVE_TOLERANCE = 14;
 const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
 const PHOTO_SPOT_NAME_PREFIX = "拍照点";
+const DEFAULT_BUILDING_MAP_PHOTO_LIMIT = 6;
+const INTERIOR_ROOM_CARD_GAP = 16;
 const EXPLORATION_TARGET_GRID_COUNT = 52;
 const EXPLORATION_MIN_GRID_SIZE = 90;
 const EXPLORATION_MAX_GRID_SIZE = 240;
@@ -3873,6 +3875,205 @@ function drawCoverImage(ctx, image, x, y, width, height) {
   return true;
 }
 
+function drawContainImage(ctx, image, x, y, width, height) {
+  if (!isPhotoImageReady(image) || width <= 0 || height <= 0) return false;
+  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+  const drawWidth = Math.max(1, image.naturalWidth * scale);
+  const drawHeight = Math.max(1, image.naturalHeight * scale);
+  const drawX = x + (width - drawWidth) / 2;
+  const drawY = y + (height - drawHeight) / 2;
+  ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+  return true;
+}
+
+function getMapMarkerThumbnailSize(image, options = {}) {
+  const maxWidth = options.maxThumbWidth || 148;
+  const maxHeight = options.maxThumbHeight || 104;
+  const fallbackRatio = options.fallbackRatio || 4 / 3;
+  const naturalWidth = isPhotoImageReady(image) ? image.naturalWidth : fallbackRatio;
+  const naturalHeight = isPhotoImageReady(image) ? image.naturalHeight : 1;
+  const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight);
+  return {
+    width: Math.max(48, Math.round(naturalWidth * scale)),
+    height: Math.max(36, Math.round(naturalHeight * scale))
+  };
+}
+
+function getMapMarkerPhotoEntries(entity, options = {}) {
+  const photos = Array.isArray(entity?.photos) ? entity.photos : [];
+  return photos.map((photo, index) => ({
+    photo,
+    label: options.label || (index === 0 ? "" : String(index + 1)),
+    source: options.source || "photo"
+  }));
+}
+
+function getBuildingMapPhotoEntries(building) {
+  if (!building) return [];
+  const entries = [
+    ...getMapMarkerPhotoEntries(building, { label: "楼", source: "building" })
+  ];
+  for (const room of building.rooms || []) {
+    entries.push(...getMapMarkerPhotoEntries(room, {
+      label: getRoomDisplayName(room),
+      source: "room"
+    }));
+    for (const item of room.items || []) {
+      entries.push(...getMapMarkerPhotoEntries(item, {
+        label: getItemDisplayName(item),
+        source: "item"
+      }));
+    }
+    for (const person of room.people || []) {
+      const photo = person.photo || person.portrait;
+      if (photo) entries.push({
+        photo,
+        label: getPersonDisplayName(person),
+        source: "person"
+      });
+    }
+  }
+  const limit = clamp(Math.floor(Number(building.mapPhotoLimit) || DEFAULT_BUILDING_MAP_PHOTO_LIMIT), 1, 12);
+  return entries.slice(0, limit);
+}
+
+function getMapMarkerGalleryLayout(entries, options = {}) {
+  const count = entries.length;
+  if (!count) return { width: 0, height: 0, items: [] };
+  const gap = options.gap || 5;
+  const hero = Boolean(options.hero) && count > 1;
+  const columns = options.columns || Math.min(count, count >= 4 ? 2 : count);
+  const itemMaxWidth = options.itemMaxWidth || (count === 1 ? 190 : count === 2 ? 138 : 118);
+  const itemMaxHeight = options.itemMaxHeight || (count === 1 ? 140 : count === 2 ? 104 : 92);
+  const items = entries.map((entry) => {
+    const image = getCachedPhotoImage(entry.photo);
+    return {
+      ...entry,
+      image,
+      size: getMapMarkerThumbnailSize(image, {
+        maxThumbWidth: itemMaxWidth,
+        maxThumbHeight: itemMaxHeight
+      })
+    };
+  });
+  if (hero) {
+    const heroImage = items[0].image;
+    const heroSize = getMapMarkerThumbnailSize(heroImage, {
+      maxThumbWidth: options.heroMaxWidth || 260,
+      maxThumbHeight: options.heroMaxHeight || 170
+    });
+    const restMaxWidth = options.restMaxWidth || 82;
+    const restMaxHeight = options.restMaxHeight || 64;
+    const restColumns = Math.min(options.restColumns || 3, items.length - 1);
+    items[0].size = heroSize;
+    for (let index = 1; index < items.length; index++) {
+      items[index].size = getMapMarkerThumbnailSize(items[index].image, {
+        maxThumbWidth: restMaxWidth,
+        maxThumbHeight: restMaxHeight
+      });
+    }
+    const rows = [[items[0]]];
+    for (let index = 1; index < items.length; index += restColumns) {
+      rows.push(items.slice(index, index + restColumns));
+    }
+    const rowWidths = rows.map((row) => row.reduce((sum, item) => sum + item.size.width, 0) + gap * Math.max(0, row.length - 1));
+    const rowHeights = rows.map((row) => Math.max(...row.map((item) => item.size.height)));
+    return {
+      width: Math.max(...rowWidths),
+      height: rowHeights.reduce((sum, height) => sum + height, 0) + gap * Math.max(0, rows.length - 1),
+      gap,
+      rows
+    };
+  }
+  const rows = [];
+  for (let index = 0; index < items.length; index += columns) {
+    const rowItems = items.slice(index, index + columns);
+    rows.push(rowItems);
+  }
+  const rowWidths = rows.map((row) => row.reduce((sum, item) => sum + item.size.width, 0) + gap * Math.max(0, row.length - 1));
+  const rowHeights = rows.map((row) => Math.max(...row.map((item) => item.size.height)));
+  return {
+    width: Math.max(...rowWidths),
+    height: rowHeights.reduce((sum, height) => sum + height, 0) + gap * Math.max(0, rows.length - 1),
+    gap,
+    rows
+  };
+}
+
+function drawMapMarkerGallery(ctx, layout, centerX, topY, options = {}) {
+  if (!layout?.rows?.length) return;
+  const selected = Boolean(options.selected);
+  let y = topY;
+  for (const row of layout.rows) {
+    const rowWidth = row.reduce((sum, item) => sum + item.size.width, 0) + layout.gap * Math.max(0, row.length - 1);
+    const rowHeight = Math.max(...row.map((item) => item.size.height));
+    let x = centerX - rowWidth / 2;
+    for (const item of row) {
+      const drawY = y + (rowHeight - item.size.height) / 2;
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(x, drawY, item.size.width, item.size.height, 6);
+      ctx.clip();
+      ctx.fillStyle = "rgba(232, 225, 211, 0.92)";
+      ctx.fillRect(x, drawY, item.size.width, item.size.height);
+      drawContainImage(ctx, item.image, x, drawY, item.size.width, item.size.height);
+      ctx.restore();
+      ctx.strokeStyle = selected ? "rgba(255, 250, 240, 0.50)" : "rgba(31, 85, 78, 0.18)";
+      ctx.beginPath();
+      ctx.roundRect(x, drawY, item.size.width, item.size.height, 6);
+      ctx.stroke();
+      if (item.label && options.showLabels !== false) {
+        ctx.save();
+        ctx.fillStyle = "rgba(31, 85, 78, 0.82)";
+        ctx.font = "800 9px Microsoft YaHei, sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(item.label, x + 4, drawY + item.size.height - 4, item.size.width - 8);
+        ctx.restore();
+      }
+      x += item.size.width + layout.gap;
+    }
+    y += rowHeight + layout.gap;
+  }
+}
+
+function getInteriorRoomCardLayout() {
+  const margin = 28;
+  const availableWidth = Math.max(1, state.canvasSize.width - margin * 2 - 44);
+  const cols = Math.max(1, Math.min(2, Math.floor((state.canvasSize.width - margin * 2) / 360)));
+  const cardW = Math.max(260, (availableWidth - (cols - 1) * INTERIOR_ROOM_CARD_GAP) / cols);
+  const cardH = 224;
+  return {
+    margin,
+    cols,
+    cardW,
+    cardH,
+    gap: INTERIOR_ROOM_CARD_GAP,
+    startX: margin + 22,
+    startY: margin + 62
+  };
+}
+
+function getInteriorRoomPhotoEntries(room, limit = 6) {
+  if (!room) return [];
+  const entries = [
+    ...getMapMarkerPhotoEntries(room, { label: "场景", source: "room" }),
+    ...(room.items || []).flatMap((entry) => getMapMarkerPhotoEntries(entry, {
+      label: getItemDisplayName(entry),
+      source: "item"
+    })),
+    ...(room.people || []).map((person) => {
+      const personPhoto = person.photo || person.portrait;
+      return personPhoto ? {
+        photo: personPhoto,
+        label: getPersonDisplayName(person),
+        source: "person"
+      } : null;
+    }).filter(Boolean)
+  ];
+  return entries.slice(0, limit);
+}
+
 function clearExplorationCache() {
   state.explorationCache = null;
   state.explorationDirty = true;
@@ -4281,6 +4482,10 @@ function renderCampusInteractionHtml(region, building) {
       <div class="game-card-head"><strong>${escapeHtml(getStructureInteractionLabel(region))}</strong><span>${escapeHtml(TYPE_STYLES[region?.type || "custom"]?.label || "对象")}</span></div>
       <div class="building-editor" ${hasBuilding ? "" : "hidden"}>
         <input class="game-input" data-game-field="buildingName" type="text" value="${escapeAttr(building?.customName || region?.name || "")}" placeholder="建筑名称">
+        <label class="compact-field">
+          <span>地图显示</span>
+          <input class="game-input" data-game-field="buildingMapPhotoLimit" type="number" min="1" max="12" step="1" value="${escapeAttr(building?.mapPhotoLimit || DEFAULT_BUILDING_MAP_PHOTO_LIMIT)}">
+        </label>
         <div class="game-actions dense">
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
@@ -4358,7 +4563,7 @@ function renderInteriorPanelHtml(building, room, item, person) {
           <select class="game-input" data-game-field="roomRelation" ${room?.type === "寝室" ? "" : "hidden"}>${roomRelationOptions}</select>
           <button class="secondary-button" type="button" data-game-action="saveRoom">保存</button>
         </div>
-        <div class="mini-photo wide">
+        <div class="mini-photo wide${roomPhotoUrl ? " has-photo" : ""}">
           ${roomPhotoUrl ? `<img src="${roomPhotoUrl}" alt="">` : `<span>场地照片</span>`}
         </div>
         <div class="game-actions dense">
@@ -4376,7 +4581,7 @@ function renderInteriorPanelHtml(building, room, item, person) {
         <div class="item-chip-row">${roomItems || `<span class="muted-inline">添加${escapeHtml(venueRule.itemLabel)}后可保存照片和备注</span>`}</div>
         <div class="item-detail" ${item ? "" : "hidden"}>
           <div class="item-top">
-            <div class="item-photo">${itemPhotoUrl ? `<img src="${itemPhotoUrl}" alt="">` : `<span>照片</span>`}</div>
+            <div class="item-photo${itemPhotoUrl ? " has-photo" : ""}">${itemPhotoUrl ? `<img src="${itemPhotoUrl}" alt="">` : `<span>照片</span>`}</div>
             <div class="item-fields">
               <input class="game-input" data-game-field="itemName" type="text" value="${escapeAttr(item?.name || "")}" placeholder="${escapeAttr(venueRule.itemLabel)}名称">
               <select class="game-input" data-game-field="itemType">${itemTypeOptions}</select>
@@ -4402,7 +4607,7 @@ function renderInteriorPanelHtml(building, room, item, person) {
         <div class="person-chip-row">${people}</div>
         <div class="person-detail" ${person ? "" : "hidden"}>
           <div class="person-top">
-            <div class="person-photo">${personPhotoUrl ? `<img src="${personPhotoUrl}" alt="">` : `<span>照片</span>`}</div>
+            <div class="person-photo${personPhotoUrl ? " has-photo" : ""}">${personPhotoUrl ? `<img src="${personPhotoUrl}" alt="">` : `<span>照片</span>`}</div>
             <div class="person-fields">
               <input class="game-input" data-game-field="personName" type="text" value="${escapeAttr(person?.name || "")}" placeholder="姓名">
               <select class="game-input" data-game-field="personType" ${selectedIsSelf ? "disabled" : ""}>${personTypeOptions}</select>
@@ -4443,7 +4648,7 @@ function onGamePanelInput(event) {
   const field = event.target.closest("[data-game-field]");
   if (!field) return;
   const name = field.dataset.gameField;
-  if (name === "buildingName") {
+  if (name === "buildingName" || name === "buildingMapPhotoLimit") {
     saveSelectedBuildingMeta({ defer: true, silent: true });
   } else if (name === "photoSpotName" || name === "photoSpotDate") {
     saveActivePhotoSpotMeta({ defer: true, silent: true });
@@ -5038,8 +5243,10 @@ function saveSelectedBuildingMeta(options = {}) {
   const region = getStructureRegionById(state.gameData.selectedBuildingId);
   if (!building || !region) return;
   const nameInput = els.gamePanel.querySelector('[data-game-field="buildingName"]');
+  const limitInput = els.gamePanel.querySelector('[data-game-field="buildingMapPhotoLimit"]');
   const name = nameInput?.value?.trim() || "";
   building.customName = name;
+  building.mapPhotoLimit = clamp(Math.floor(Number(limitInput?.value) || DEFAULT_BUILDING_MAP_PHOTO_LIMIT), 1, 12);
   region.name = name || region.name || "";
   building.updatedAt = new Date().toISOString();
   commitStructureDataChange();
@@ -6948,17 +7155,14 @@ function findWalkableTargetAlongPlayerLine(origin, target) {
 function selectInteriorRoomAtScreen(pointer) {
   const building = getSelectedBuildingMemory();
   if (!building?.rooms?.length || !pointer) return;
-  const margin = 28;
-  const cols = Math.max(1, Math.min(3, Math.floor((state.canvasSize.width - margin * 2) / 220)));
-  const cardW = Math.max(172, (state.canvasSize.width - margin * 2 - 44 - (cols - 1) * 16) / cols);
-  const cardH = 126;
+  const { cols, cardW, cardH, gap, startX, startY } = getInteriorRoomCardLayout();
   const x = pointer.startX;
   const y = pointer.startY;
   for (let index = 0; index < building.rooms.length; index++) {
     const col = index % cols;
     const row = Math.floor(index / cols);
-    const cardX = margin + 22 + col * (cardW + 16);
-    const cardY = margin + 62 + row * (cardH + 16);
+    const cardX = startX + col * (cardW + gap);
+    const cardY = startY + row * (cardH + gap);
     if (x >= cardX && x <= cardX + cardW && y >= cardY && y <= cardY + cardH) {
       selectRoom(building.rooms[index].id);
       return;
@@ -8567,7 +8771,7 @@ function drawNearbyBuildingLabels(ctx, editData) {
     drawBuildingMarkerCard(ctx, region, center, {
       selected,
       nearby: isNearby,
-      maxWidth: 220,
+      maxWidth: 340,
       font: "800 13px Microsoft YaHei, sans-serif"
     });
   }
@@ -8575,19 +8779,20 @@ function drawNearbyBuildingLabels(ctx, editData) {
 
 function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
   const label = getPhotoSpotDisplayName(spot);
-  const photo = getFirstPhoto(spot);
-  const image = photo ? getCachedPhotoImage(photo) : null;
+  const gallery = getMapMarkerGalleryLayout(getMapMarkerPhotoEntries(spot), {
+    maxThumbWidth: 210,
+    maxThumbHeight: 150
+  });
   ctx.save();
   ctx.font = "800 12px Microsoft YaHei, sans-serif";
-  const labelWidth = Math.min(ctx.measureText(label).width + 20, 180);
-  const hasThumb = Boolean(photo);
-  const thumbW = hasThumb ? 58 : 0;
-  const thumbH = hasThumb ? 42 : 0;
+  const labelWidth = Math.min(ctx.measureText(label).width + 20, 220);
+  const hasGallery = gallery.width > 0;
   const countLabel = `${spot.photos?.length || 0}张`;
   const countWidth = ctx.measureText(countLabel).width + 20;
-  let width = Math.max(82, labelWidth, countWidth, hasThumb ? thumbW + 20 : 0);
-  width = Math.min(width, 180);
-  const height = 24 + (hasThumb ? thumbH + 8 : 18);
+  let width = Math.max(92, labelWidth, countWidth, hasGallery ? gallery.width + 18 : 0);
+  width = Math.min(width, options.maxWidth || 230);
+  const titleHeight = hasGallery ? 20 : 26;
+  const height = titleHeight + (hasGallery ? gallery.height + 10 : 18);
   const x = screen.x - width / 2;
   const y = screen.y + (options.yOffset || -46) - height;
   const selected = Boolean(options.selected);
@@ -8601,22 +8806,11 @@ function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
   ctx.fillStyle = selected ? "#fffaf0" : "#1d2a24";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(label, screen.x, y + 13, width - 10);
-  let cursorY = y + 24;
-  if (hasThumb) {
-    const thumbX = screen.x - thumbW / 2;
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(thumbX, cursorY + 4, thumbW, thumbH, 5);
-    ctx.clip();
-    ctx.fillStyle = "rgba(232, 225, 211, 0.9)";
-    ctx.fillRect(thumbX, cursorY + 4, thumbW, thumbH);
-    if (image) drawCoverImage(ctx, image, thumbX, cursorY + 4, thumbW, thumbH);
-    ctx.restore();
-    ctx.strokeStyle = selected ? "rgba(255, 250, 240, 0.45)" : "rgba(31, 85, 78, 0.16)";
-    ctx.beginPath();
-    ctx.roundRect(thumbX, cursorY + 4, thumbW, thumbH, 5);
-    ctx.stroke();
+  ctx.font = hasGallery ? "800 11px Microsoft YaHei, sans-serif" : ctx.font;
+  ctx.fillText(label, screen.x, y + titleHeight / 2 + 1, width - 10);
+  let cursorY = y + titleHeight;
+  if (hasGallery) {
+    drawMapMarkerGallery(ctx, gallery, screen.x, cursorY + 5, { selected, showLabels: false });
   } else {
     ctx.fillStyle = selected ? "rgba(255, 250, 240, 0.82)" : "rgba(31, 85, 78, 0.72)";
     ctx.font = "800 10px Microsoft YaHei, sans-serif";
@@ -8628,22 +8822,28 @@ function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
 function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
   const building = state.gameData.buildings[region.id] || null;
   const label = getStructureInteractionLabel(region);
-  const photo = getFirstPhoto(building);
-  const image = photo ? getCachedPhotoImage(photo) : null;
+  const gallery = getMapMarkerGalleryLayout(getBuildingMapPhotoEntries(building), {
+    hero: true,
+    heroMaxWidth: 286,
+    heroMaxHeight: 182,
+    restMaxWidth: 92,
+    restMaxHeight: 68,
+    restColumns: 3,
+    gap: 6
+  });
   const people = showMapAnnotations() ? getBuildingPeople(building) : [];
   const font = options.font || "800 13px Microsoft YaHei, sans-serif";
   ctx.save();
   ctx.font = font;
   const labelWidth = Math.min(ctx.measureText(label).width + 20, options.maxWidth || 220);
   let width = Math.max(84, labelWidth);
-  const hasThumb = Boolean(photo);
-  const thumbW = hasThumb ? 58 : 0;
-  const thumbH = hasThumb ? 42 : 0;
-  if (hasThumb) width = Math.max(width, thumbW + 20);
+  const hasGallery = gallery.width > 0;
+  if (hasGallery) width = Math.max(width, gallery.width + 18);
   if (people.length) width = Math.max(width, 168);
-  width = Math.min(width, options.maxWidth || 220);
+  width = Math.min(width, options.maxWidth || 320);
   const peopleHeight = people.length ? 28 + Math.ceil(people.length / 2) * 20 : 0;
-  const height = 24 + (hasThumb ? thumbH + 8 : 0) + peopleHeight;
+  const titleHeight = hasGallery ? 20 : 26;
+  const height = titleHeight + (hasGallery ? gallery.height + 10 : 0) + peopleHeight;
   const x = screen.x - width / 2;
   const y = screen.y - height / 2;
   const selected = Boolean(options.selected);
@@ -8658,25 +8858,14 @@ function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
   ctx.fillStyle = selected ? "#fffaf0" : "#1d2a24";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(label, screen.x, y + 13, width - 10);
-  let cursorY = y + 24;
-  if (hasThumb) {
-    const thumbX = screen.x - thumbW / 2;
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(thumbX, cursorY + 4, thumbW, thumbH, 5);
-    ctx.clip();
-    ctx.fillStyle = "rgba(232, 225, 211, 0.9)";
-    ctx.fillRect(thumbX, cursorY + 4, thumbW, thumbH);
-    if (image) drawCoverImage(ctx, image, thumbX, cursorY + 4, thumbW, thumbH);
-    ctx.restore();
-    ctx.strokeStyle = selected ? "rgba(255, 250, 240, 0.45)" : "rgba(31, 85, 78, 0.16)";
-    ctx.beginPath();
-    ctx.roundRect(thumbX, cursorY + 4, thumbW, thumbH, 5);
-    ctx.stroke();
-    cursorY += thumbH + 10;
+  ctx.font = hasGallery ? "800 11px Microsoft YaHei, sans-serif" : font;
+  ctx.fillText(label, screen.x, y + titleHeight / 2 + 1, width - 10);
+  let cursorY = y + titleHeight;
+  if (hasGallery) {
+    drawMapMarkerGallery(ctx, gallery, screen.x, cursorY + 5, { selected, showLabels: false });
+    cursorY += gallery.height + 12;
   }
-  if (people.length) {
+  if (!hasGallery && people.length) {
     drawPeopleMarkerList(ctx, people, screen.x, cursorY + 4, {
       maxWidth: width - 12,
       compact: true,
@@ -8838,6 +9027,7 @@ function drawMoveTarget(ctx) {
 function drawInteriorScene(ctx) {
   const building = getSelectedBuildingMemory();
   const region = getStructureRegionById(state.gameData.location.buildingId);
+  const layout = getInteriorRoomCardLayout();
   ctx.save();
   ctx.fillStyle = "#e8e1d3";
   ctx.fillRect(0, 0, state.canvasSize.width, state.canvasSize.height);
@@ -8849,53 +9039,51 @@ function drawInteriorScene(ctx) {
   ctx.strokeRect(margin, margin, state.canvasSize.width - margin * 2, state.canvasSize.height - margin * 2);
   ctx.fillStyle = "#1f554e";
   ctx.font = "800 18px Microsoft YaHei, sans-serif";
-  ctx.fillText(getBuildingDisplayName(region, building), margin + 18, margin + 34);
+  ctx.fillText(getBuildingDisplayName(region, building), layout.margin + 18, layout.margin + 34);
   const rooms = building?.rooms || [];
-  const cols = Math.max(1, Math.min(3, Math.floor((state.canvasSize.width - margin * 2) / 220)));
-  const cardW = Math.max(172, (state.canvasSize.width - margin * 2 - 44 - (cols - 1) * 16) / cols);
-  const cardH = 126;
   rooms.forEach((room, index) => {
-    const col = index % cols;
-    const row = Math.floor(index / cols);
-    const x = margin + 22 + col * (cardW + 16);
-    const y = margin + 62 + row * (cardH + 16);
+    const col = index % layout.cols;
+    const row = Math.floor(index / layout.cols);
+    const x = layout.startX + col * (layout.cardW + layout.gap);
+    const y = layout.startY + row * (layout.cardH + layout.gap);
     const active = room.id === state.gameData.selectedRoomId;
     ctx.fillStyle = active ? "#e8f0e7" : "#fffdf6";
     ctx.strokeStyle = active ? "#1f554e" : "#d7cbb8";
     ctx.lineWidth = active ? 2 : 1;
     ctx.beginPath();
-    ctx.roundRect(x, y, cardW, cardH, 8);
+    ctx.roundRect(x, y, layout.cardW, layout.cardH, 8);
     ctx.fill();
     ctx.stroke();
-    const photo = getFirstPhoto(room);
-    const photoImage = photo ? getCachedPhotoImage(photo) : null;
-    const thumbSize = 54;
+    const entries = getInteriorRoomPhotoEntries(room, 6);
+    const gallery = getMapMarkerGalleryLayout(entries, {
+      hero: true,
+      heroMaxWidth: Math.min(300, layout.cardW - 28),
+      heroMaxHeight: 136,
+      restMaxWidth: 78,
+      restMaxHeight: 58,
+      restColumns: 3,
+      gap: 5
+    });
+    const thumbW = layout.cardW - 24;
+    const thumbH = layout.cardH - 58;
     const thumbX = x + 12;
     const thumbY = y + 16;
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(thumbX, thumbY, thumbSize, thumbSize, 7);
+    ctx.roundRect(thumbX, thumbY, thumbW, thumbH, 7);
     ctx.clip();
     ctx.fillStyle = "#f2eadc";
-    ctx.fillRect(thumbX, thumbY, thumbSize, thumbSize);
-    if (photoImage) drawCoverImage(ctx, photoImage, thumbX, thumbY, thumbSize, thumbSize);
+    ctx.fillRect(thumbX, thumbY, thumbW, thumbH);
     ctx.restore();
+    if (gallery.width) drawMapMarkerGallery(ctx, gallery, thumbX + thumbW / 2, thumbY + (thumbH - gallery.height) / 2, { selected: active, showLabels: false });
     ctx.strokeStyle = active ? "rgba(31, 85, 78, 0.32)" : "rgba(29, 42, 36, 0.16)";
     ctx.beginPath();
-    ctx.roundRect(thumbX, thumbY, thumbSize, thumbSize, 7);
+    ctx.roundRect(thumbX, thumbY, thumbW, thumbH, 7);
     ctx.stroke();
     ctx.fillStyle = "#1d2a24";
     ctx.font = "800 14px Microsoft YaHei, sans-serif";
-    ctx.fillText(getRoomDisplayName(room), x + 78, y + 30, cardW - 90);
-    ctx.fillStyle = "#667064";
-    ctx.font = "700 12px Microsoft YaHei, sans-serif";
-    ctx.fillText(`${room.type || "场地"}  ${room.people.length} 人  ${room.photos.length} 图`, x + 78, y + 54, cardW - 90);
-    if (showMapAnnotations() && room.people.length) {
-      drawPeopleMarkerList(ctx, room.people.map((person) => ({ person, room })), x + cardW / 2, y + 82, {
-        maxWidth: cardW - 24,
-        limit: 4
-      });
-    }
+    const textY = thumbY + thumbH + 22;
+    ctx.fillText(getRoomDisplayName(room), x + 14, textY, layout.cardW - 28);
   });
   ctx.restore();
 }
@@ -9804,6 +9992,7 @@ function normalizeGameBuilding(source, fallbackId) {
     category: "other",
     photos: [],
     activePhotoIndex: 0,
+    mapPhotoLimit: DEFAULT_BUILDING_MAP_PHOTO_LIMIT,
     entrances: [],
     rooms: [],
     createdAt: new Date().toISOString(),
@@ -9815,6 +10004,7 @@ function normalizeGameBuilding(source, fallbackId) {
     category: BUILDING_CATEGORY_RULES[source.category] ? source.category : "other",
     photos: Array.isArray(source.photos) ? source.photos.map(normalizePhotoRecord).filter(Boolean) : [],
     activePhotoIndex: Number.isFinite(Number(source.activePhotoIndex)) ? Math.max(0, Math.floor(Number(source.activePhotoIndex))) : 0,
+    mapPhotoLimit: Number.isFinite(Number(source.mapPhotoLimit)) ? clamp(Math.floor(Number(source.mapPhotoLimit)), 1, 12) : DEFAULT_BUILDING_MAP_PHOTO_LIMIT,
     entrances: Array.isArray(source.entrances) ? source.entrances.map(normalizeEntrance).filter(Boolean) : [],
     rooms: Array.isArray(source.rooms) ? source.rooms.map(normalizeRoom).filter(Boolean) : [],
     createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString(),
