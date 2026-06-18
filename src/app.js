@@ -2498,7 +2498,7 @@ function gameLoop(now) {
   state.lastGameFrameTime = now;
   if (!state.editorEnabled && state.mapImage) {
     const moved = updateGameMovement(dt);
-    if (moved || getMovementVector().x || getMovementVector().y) {
+    if (moved || getMovementVector().x || getMovementVector().y || (state.moveTarget && !state.movementKeys.size)) {
       state.gameLoopRunning = true;
       requestAnimationFrame(gameLoop);
     }
@@ -2514,7 +2514,21 @@ function updateGameMovement(dt) {
   if (state.moveTarget && !state.movementKeys.size && distance(state.gameData.player, state.moveTarget) <= MOVE_TARGET_STOP_DISTANCE) {
     clearMoveTarget();
   }
-  const vector = getMovementVector();
+  let vector = getMovementVector();
+  if (!vector.x && !vector.y && state.moveTarget && !state.movementKeys.size && hasActiveMoveTargetPath()) {
+    clearMoveTargetPath();
+    vector = getMovementVector();
+  }
+  if (!vector.x && !vector.y && state.moveTarget && !state.movementKeys.size) {
+    updateMoveTargetStuckWatch(dt);
+    if (state.moveTargetStuckSeconds >= MOVE_TARGET_STUCK_SECONDS) {
+      clearMoveTarget();
+    } else {
+      startGameLoop();
+    }
+    queueDraw();
+    return false;
+  }
   if (!vector.x && !vector.y) return false;
   const player = state.gameData.player;
   const previousPoint = { x: player.x, y: player.y };
@@ -2526,6 +2540,14 @@ function updateGameMovement(dt) {
   if (next && distance(player, next) < MOVE_SLIDE_MIN_DISTANCE) next = null;
   if (!next) {
     if (state.moveTarget && !state.movementKeys.size) {
+      if (hasActiveMoveTargetPath()) {
+        clearMoveTargetPath();
+        state.moveTargetRepathSeconds = 0;
+        state.moveTargetPathCooldownSeconds = 0;
+        startGameLoop();
+        queueDraw();
+        return false;
+      }
       updateMoveTargetStuckWatch(dt);
       state.moveTargetRepathSeconds += dt;
       if (state.moveTargetRepathSeconds >= MOVE_TARGET_REPATH_SECONDS && tryBuildMoveTargetPath(player)) {
@@ -2626,6 +2648,18 @@ function getActiveMoveTargetPoint() {
   return state.moveTarget || state.gameData.player;
 }
 
+function hasActiveMoveTargetPath() {
+  return Boolean(state.moveTargetPath?.length && state.moveTargetPathIndex < state.moveTargetPath.length);
+}
+
+function clearMoveTargetPath() {
+  state.moveTargetPath = [];
+  state.moveTargetPathIndex = 0;
+  state.moveTargetBestWaypointDistance = Number.isFinite(state.moveTargetBestDistance)
+    ? state.moveTargetBestDistance
+    : distance(state.gameData.player, state.moveTarget || state.gameData.player);
+}
+
 function advanceMoveTargetWaypoint() {
   if (!state.moveTargetPath?.length) return;
   const player = state.gameData.player;
@@ -2636,11 +2670,7 @@ function advanceMoveTargetWaypoint() {
     state.moveTargetBestWaypointDistance = Infinity;
   }
   if (state.moveTargetPathIndex >= state.moveTargetPath.length) {
-    state.moveTargetPath = [];
-    state.moveTargetPathIndex = 0;
-    state.moveTargetBestWaypointDistance = Number.isFinite(state.moveTargetBestDistance)
-      ? state.moveTargetBestDistance
-      : distance(player, state.moveTarget || player);
+    clearMoveTargetPath();
   }
 }
 
