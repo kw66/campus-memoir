@@ -41,6 +41,8 @@ const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
 const PHOTO_SPOT_NAME_PREFIX = "拍照点";
 const DEFAULT_BUILDING_MAP_PHOTO_LIMIT = 6;
+const MAP_MARKER_PHOTO_MIN_SCALE = 0.22;
+const MAP_MARKER_PHOTO_MAX_SCALE = 2;
 const INTERIOR_ROOM_CARD_GAP = 16;
 const EXPLORATION_TARGET_GRID_COUNT = 52;
 const EXPLORATION_MIN_GRID_SIZE = 90;
@@ -767,6 +769,11 @@ async function init() {
       getCurrentAreaDraft,
       createParallelogramAreaFromThreePoints,
       normalizeArea,
+      refreshMapCaches: () => {
+        rebuildInteractionPreview();
+        clearExplorationCache();
+        queueDraw();
+      },
       initializeGameForCurrentMap,
       updateNearbyGameContext,
       followPlayer,
@@ -3244,7 +3251,7 @@ function samplePlayerCollisionAt(point) {
 }
 
 function isPriorityPathType(type) {
-  return type === "road" || type === "bridge";
+  return type === "road" || type === "bridge" || type === "gate";
 }
 
 function isPlayerCircleTouchingPriorityPath(point) {
@@ -3805,14 +3812,31 @@ function getEntranceSpotAutoName(spot) {
 }
 
 function getPhotoSpotDateValue(spot) {
-  const raw = spot?.capturedAt || spot?.createdAt || "";
+  return getIsoDateInputValue(spot?.capturedAt || spot?.createdAt || "");
+}
+
+function getSpotPanelDateValue(spot) {
+  const selectedPhoto = getSelectedSpotPhotoForEdit(spot);
+  return selectedPhoto
+    ? getIsoDateInputValue(selectedPhoto.capturedAt || selectedPhoto.createdAt || "")
+    : getPhotoSpotDateValue(spot);
+}
+
+function getIsoDateInputValue(raw) {
   if (!raw) return "";
+  const datePrefix = String(raw).match(/^(\d{4}-\d{2}-\d{2})/);
+  if (datePrefix) return datePrefix[1];
   const date = new Date(raw);
   if (!Number.isFinite(date.getTime())) return "";
   const yyyy = date.getFullYear();
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const dd = String(date.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function dateInputValueToIso(dateValue, fallback = "") {
+  if (!dateValue) return fallback || new Date().toISOString();
+  return `${dateValue}T12:00:00.000Z`;
 }
 
 function getNearbyStructureTargets(point) {
@@ -4129,13 +4153,15 @@ function drawContainImage(ctx, image, x, y, width, height) {
 function getMapMarkerThumbnailSize(image, options = {}) {
   const maxWidth = options.maxThumbWidth || 148;
   const maxHeight = options.maxThumbHeight || 104;
+  const minWidth = options.minThumbWidth || 48;
+  const minHeight = options.minThumbHeight || 36;
   const fallbackRatio = options.fallbackRatio || 4 / 3;
   const naturalWidth = isPhotoImageReady(image) ? image.naturalWidth : fallbackRatio;
   const naturalHeight = isPhotoImageReady(image) ? image.naturalHeight : 1;
   const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight);
   return {
-    width: Math.max(48, Math.round(naturalWidth * scale)),
-    height: Math.max(36, Math.round(naturalHeight * scale))
+    width: Math.max(minWidth, Math.round(naturalWidth * scale)),
+    height: Math.max(minHeight, Math.round(naturalHeight * scale))
   };
 }
 
@@ -4303,11 +4329,12 @@ function getBuildingMapPhotoEntries(building) {
 function getMapMarkerGalleryLayout(entries, options = {}) {
   const count = entries.length;
   if (!count) return { width: 0, height: 0, items: [] };
-  const gap = options.gap || 5;
+  const scale = getMapMarkerPhotoScale(options);
+  const gap = Math.max(1, Math.round((options.gap || 5) * scale));
   const hero = Boolean(options.hero) && count > 1;
   const columns = options.columns || Math.min(count, count >= 4 ? 2 : count);
-  const itemMaxWidth = options.itemMaxWidth || (count === 1 ? 190 : count === 2 ? 138 : 118);
-  const itemMaxHeight = options.itemMaxHeight || (count === 1 ? 140 : count === 2 ? 104 : 92);
+  const itemMaxWidth = scaleMapMarkerPhotoSize(options.itemMaxWidth || (count === 1 ? 190 : count === 2 ? 138 : 118), scale);
+  const itemMaxHeight = scaleMapMarkerPhotoSize(options.itemMaxHeight || (count === 1 ? 140 : count === 2 ? 104 : 92), scale);
   const items = entries.map((entry) => {
     const image = getCachedPhotoImage(entry.photo);
     return {
@@ -4315,24 +4342,30 @@ function getMapMarkerGalleryLayout(entries, options = {}) {
       image,
       size: getMapMarkerThumbnailSize(image, {
         maxThumbWidth: itemMaxWidth,
-        maxThumbHeight: itemMaxHeight
+        maxThumbHeight: itemMaxHeight,
+        minThumbWidth: scaleMapMarkerPhotoSize(48, scale),
+        minThumbHeight: scaleMapMarkerPhotoSize(36, scale)
       })
     };
   });
   if (hero) {
     const heroImage = items[0].image;
     const heroSize = getMapMarkerThumbnailSize(heroImage, {
-      maxThumbWidth: options.heroMaxWidth || 260,
-      maxThumbHeight: options.heroMaxHeight || 170
+      maxThumbWidth: scaleMapMarkerPhotoSize(options.heroMaxWidth || 260, scale),
+      maxThumbHeight: scaleMapMarkerPhotoSize(options.heroMaxHeight || 170, scale),
+      minThumbWidth: scaleMapMarkerPhotoSize(48, scale),
+      minThumbHeight: scaleMapMarkerPhotoSize(36, scale)
     });
-    const restMaxWidth = options.restMaxWidth || 82;
-    const restMaxHeight = options.restMaxHeight || 64;
+    const restMaxWidth = scaleMapMarkerPhotoSize(options.restMaxWidth || 82, scale);
+    const restMaxHeight = scaleMapMarkerPhotoSize(options.restMaxHeight || 64, scale);
     const restColumns = Math.min(options.restColumns || 3, items.length - 1);
     items[0].size = heroSize;
     for (let index = 1; index < items.length; index++) {
       items[index].size = getMapMarkerThumbnailSize(items[index].image, {
         maxThumbWidth: restMaxWidth,
-        maxThumbHeight: restMaxHeight
+        maxThumbHeight: restMaxHeight,
+        minThumbWidth: scaleMapMarkerPhotoSize(48, scale),
+        minThumbHeight: scaleMapMarkerPhotoSize(36, scale)
       });
     }
     const rows = [[items[0]]];
@@ -4361,6 +4394,15 @@ function getMapMarkerGalleryLayout(entries, options = {}) {
     gap,
     rows
   };
+}
+
+function getMapMarkerPhotoScale(options = {}) {
+  if (options.scalePhotos === false) return 1;
+  return clamp(Number(state.view.scale) || 1, MAP_MARKER_PHOTO_MIN_SCALE, MAP_MARKER_PHOTO_MAX_SCALE);
+}
+
+function scaleMapMarkerPhotoSize(value, scale) {
+  return Math.max(1, Math.round(Number(value || 1) * scale));
 }
 
 function drawMapMarkerGallery(ctx, layout, centerX, topY, options = {}) {
@@ -4592,8 +4634,7 @@ function calculateExplorationProgress(editData, gameData) {
     for (let col = 0; col < columns; col++) {
       const index = indexFor(col, row);
       const bounds = getExplorationCellBounds(col, row, gridSize, width, height);
-      const hasTransparent = explorationCellHasTransparentPixel(bounds);
-      if (hasTransparent && !cells[index].hasBuilding) continue;
+      if (explorationCellHasTransparentPixel(bounds)) continue;
       if (!explorationCellHasVisibleMap(bounds)) continue;
       cells[index].valid = true;
     }
@@ -4601,7 +4642,7 @@ function calculateExplorationProgress(editData, gameData) {
 
   for (const region of litRegions) {
     markRegionCells(region, gridSize, columns, rows, (index) => {
-      cells[index].lit = true;
+      if (cells[index].valid) cells[index].lit = true;
     });
   }
 
@@ -4610,7 +4651,7 @@ function calculateExplorationProgress(editData, gameData) {
     const col = Math.floor(clamp(spot.x, 0, Math.max(0, width - 1)) / gridSize);
     const row = Math.floor(clamp(spot.y, 0, Math.max(0, height - 1)) / gridSize);
     const index = indexFor(clamp(col, 0, columns - 1), clamp(row, 0, rows - 1));
-    cells[index].lit = true;
+    if (cells[index].valid) cells[index].lit = true;
   }
 
   let totalCells = 0;
@@ -4647,7 +4688,32 @@ function getExplorationCellBounds(col, row, gridSize, width, height) {
 }
 
 function explorationCellHasTransparentPixel(bounds) {
+  if (explorationCellHasTransparentMaskPixel(bounds)) return true;
   return getExplorationCellSamplePoints(bounds).some((point) => !isPointOnVisibleMap(point));
+}
+
+function explorationCellHasTransparentMaskPixel(bounds) {
+  const mask = state.mapAlphaMask;
+  if (!mask?.data?.length || !mask.width || !mask.height || !mask.scale) return false;
+  const editData = getSelectedEditData();
+  const cropPolygon = editData.cropPolygon?.length >= 3 ? editData.cropPolygon : null;
+  const left = clamp(Math.floor(bounds.left * mask.scale), 0, mask.width - 1);
+  const right = clamp(Math.ceil(bounds.right * mask.scale) - 1, 0, mask.width - 1);
+  const top = clamp(Math.floor(bounds.top * mask.scale), 0, mask.height - 1);
+  const bottom = clamp(Math.ceil(bounds.bottom * mask.scale) - 1, 0, mask.height - 1);
+  for (let y = top; y <= bottom; y += 1) {
+    for (let x = left; x <= right; x += 1) {
+      if (mask.data[y * mask.width + x] < 16) return true;
+      if (cropPolygon) {
+        const point = {
+          x: (x + 0.5) / mask.scale,
+          y: (y + 0.5) / mask.scale
+        };
+        if (!pointInPolygon(point, cropPolygon)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 function explorationCellHasVisibleMap(bounds) {
@@ -4664,8 +4730,12 @@ function getExplorationCellSamplePoints(bounds) {
   return [
     { x: cx, y: cy },
     { x: left, y: top },
+    { x: cx, y: top },
     { x: right, y: top },
+    { x: left, y: cy },
+    { x: right, y: cy },
     { x: left, y: bottom },
+    { x: cx, y: bottom },
     { x: right, y: bottom }
   ];
 }
@@ -4761,6 +4831,7 @@ function renderGamePanel(options = {}) {
     spotIndex: spot?.activeIndex || 0,
     spotName: spot?.name || "",
     spotDate: spot?.capturedAt || "",
+    spotEditPhotoDate: spot ? getSelectedSpotPhotoForEdit(spot)?.capturedAt || "" : "",
     spotSelectedPhotoId: state.gameData.selectedSpotPhotoId || "",
     spotEditPhotoId: state.selectedSpotPhotoForEditId || "",
     spotEntrance: spot ? getPhotoSpotEntrance(spot)?.buildingId || "" : "",
@@ -4819,7 +4890,6 @@ function renderNearbyInteractionChooserHtml() {
 
 function renderPhotoPanelHtml(spot) {
   if (!spot) return "";
-  const target = getSelectedNearbyInteractionTarget();
   const selectedId = getSelectedSpotPhotoId(spot);
   const photoList = renderSpotPhotoListHtml(spot, selectedId);
   const spotTitle = getPhotoSpotDisplayName(spot);
@@ -4832,15 +4902,9 @@ function renderPhotoPanelHtml(spot) {
   const moveForwardDisabled = editIndex < 0 || editIndex >= spot.photos.length - 1;
   return `
     <section class="game-card photo-card${entranceTarget ? " entrance-card" : ""}">
-      <div class="game-card-head">
-        <strong>${escapeHtml(spotTitle)}</strong>
-        <div class="game-card-head-actions">
-          <span class="interaction-meta">最近 ${Math.round(target?.distance || 0)}px</span>
-        </div>
-      </div>
       <div class="spot-fields">
         <input class="game-input" data-game-field="photoSpotName" type="text" value="${escapeAttr(spot.name || (entranceTarget ? spotTitle : ""))}" placeholder="${escapeAttr(spotTitle)}">
-        <input class="game-input" data-game-field="photoSpotDate" type="date" value="${escapeAttr(getPhotoSpotDateValue(spot))}">
+        <input class="game-input" data-game-field="photoSpotDate" type="date" value="${escapeAttr(getSpotPanelDateValue(spot))}">
       </div>
       ${entranceTarget ? `<div class="entrance-target">入口：${escapeHtml(getBuildingDisplayName(entranceTarget.region, entranceTarget.building))}</div>` : ""}
       <div class="game-actions dense photo-actions">
@@ -5550,6 +5614,11 @@ function getSelectedSpotPhotoForEditId(spot) {
   return getSpotPhotoIndexById(spot, selected) >= 0 ? selected : "";
 }
 
+function getSelectedSpotPhotoForEdit(spot) {
+  const selectedId = getSelectedSpotPhotoForEditId(spot);
+  return selectedId ? spot.photos.find((photo) => photo.id === selectedId) || null : null;
+}
+
 function getSelectedBuildingPhotoId(building) {
   if (!building?.photos?.length) return "";
   const selected = state.gameData.selectedBuildingPhotoId;
@@ -5670,7 +5739,12 @@ function saveActivePhotoSpotMeta(options = {}) {
     spot.name = name;
   }
   const dateValue = dateInput?.value || "";
-  spot.capturedAt = dateValue ? new Date(`${dateValue}T00:00:00`).toISOString() : (spot.capturedAt || new Date().toISOString());
+  const selectedPhoto = getSelectedSpotPhotoForEdit(spot);
+  if (selectedPhoto) {
+    selectedPhoto.capturedAt = dateInputValueToIso(dateValue, selectedPhoto.capturedAt || selectedPhoto.createdAt || "");
+  } else {
+    spot.capturedAt = dateInputValueToIso(dateValue, spot.capturedAt || spot.createdAt || "");
+  }
   spot.updatedAt = new Date().toISOString();
   markGameDirty(options.defer ? { defer: true } : {});
   if (!options.silent) setGameNotice("拍照点已保存");
@@ -7633,36 +7707,6 @@ function handleGameCanvasClick(imagePoint) {
     selectInteriorRoomAtScreen(state.gamePointerDown || null);
     return;
   }
-  const clickedSpot = getNearbyPhotoSpotTarget(imagePoint);
-  const nearbySpot = clickedSpot && state.currentNearbyInteractionTargets.find((target) => target.key === clickedSpot.key);
-  if (nearbySpot) {
-    clearMoveTarget();
-    state.selectedNearbyInteractionKey = clickedSpot.key;
-    state.defaultPhotoSpotInteractionKey = clickedSpot.key;
-    state.gameData.selectedPhotoSpotId = clickedSpot.id;
-    state.gameData.selectedBuildingId = "";
-    state.gameData.selectedBuildingPhotoId = "";
-    state.selectedSpotPhotoForEditId = "";
-    state.selectedBuildingPhotoForEditId = "";
-    renderGamePanel({ force: true });
-    return;
-  }
-  const clickedStructure = getClickedStructureTarget(imagePoint);
-  const target = clickedStructure
-    ? state.currentNearbyInteractionTargets.find((item) => item.key === clickedStructure.key)
-    : null;
-  if (target) {
-    clearMoveTarget();
-    state.selectedNearbyInteractionKey = target.key;
-    state.gameData.selectedBuildingId = target.id;
-    state.selectedSpotPhotoForEditId = "";
-    const building = getOrCreateBuildingMemory(target.id);
-    state.gameData.selectedBuildingPhotoId = getSelectedBuildingPhotoId(building);
-    state.selectedBuildingPhotoForEditId = "";
-    markGameDirty({ defer: true });
-    renderGamePanel({ force: true });
-    return;
-  }
   setMoveTargetFromClick(imagePoint);
 }
 
@@ -7684,7 +7728,7 @@ function setMoveTargetFromClick(imagePoint) {
 function findMoveTargetNear(point) {
   const clamped = clampImagePoint(point);
   const player = state.gameData.player;
-  if (isStartableMoveTarget(clamped, player)) return clamped;
+  if (isClickableMoveTarget(clamped)) return clamped;
   const lineTarget = findWalkableTargetAlongPlayerLine(player, clamped);
   if (lineTarget) return lineTarget;
   return findNearestWalkableClickTarget(clamped, MOVE_TARGET_SEARCH_RADIUS, player);
@@ -7703,13 +7747,17 @@ function findNearestWalkableClickTarget(point, maxRadius, origin = state.gameDat
         y: point.y + Math.sin(angle) * radius
       });
       const d = distance(point, candidate);
-      if (d >= bestDistance || !isStartableMoveTarget(candidate, origin)) continue;
+      if (d >= bestDistance || !isClickableMoveTarget(candidate)) continue;
       best = candidate;
       bestDistance = d;
     }
     if (best) return best;
   }
   return null;
+}
+
+function isClickableMoveTarget(target) {
+  return canPlayerMoveTo(target);
 }
 
 function isStartableMoveTarget(target, origin = state.gameData.player) {
@@ -7731,7 +7779,7 @@ function findWalkableTargetAlongPlayerLine(origin, target) {
   const dx = target.x - origin.x;
   const dy = target.y - origin.y;
   const length = Math.hypot(dx, dy);
-  if (length <= MOVE_TARGET_STOP_DISTANCE) return isStartableMoveTarget(target, origin) ? target : null;
+  if (length <= MOVE_TARGET_STOP_DISTANCE) return isClickableMoveTarget(target) ? target : null;
   const step = Math.max(8, getPlayerCollisionRadius(origin) * 0.5);
   for (let remaining = length; remaining >= MOVE_TARGET_STOP_DISTANCE; remaining -= step) {
     const t = remaining / length;
@@ -7739,7 +7787,7 @@ function findWalkableTargetAlongPlayerLine(origin, target) {
       x: origin.x + dx * t,
       y: origin.y + dy * t
     });
-    if (isStartableMoveTarget(candidate, origin)) return candidate;
+    if (isClickableMoveTarget(candidate)) return candidate;
   }
   return null;
 }
@@ -9386,7 +9434,8 @@ function drawNearbyBuildingLabels(ctx, editData) {
 
 function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
   const label = getPhotoSpotDisplayName(spot);
-  const gallery = getMapMarkerGalleryLayout(getMapMarkerPhotoEntries(spot), {
+  const firstPhotoEntry = getMapMarkerPhotoEntries(spot).slice(0, 1);
+  const gallery = getMapMarkerGalleryLayout(firstPhotoEntry, {
     maxThumbWidth: 210,
     maxThumbHeight: 150
   });
@@ -9397,7 +9446,8 @@ function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
   const countLabel = `${spot.photos?.length || 0}张`;
   const countWidth = ctx.measureText(countLabel).width + 20;
   let width = Math.max(92, labelWidth, countWidth, hasGallery ? gallery.width + 18 : 0);
-  width = Math.min(width, options.maxWidth || 230);
+  const maxWidth = Math.max(options.maxWidth || 230, hasGallery ? gallery.width + 18 : 0);
+  width = Math.min(width, maxWidth);
   const titleHeight = hasGallery ? 20 : 26;
   const height = titleHeight + (hasGallery ? gallery.height + 10 : 18);
   const x = screen.x - width / 2;
@@ -9447,7 +9497,8 @@ function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
   const hasGallery = gallery.width > 0;
   if (hasGallery) width = Math.max(width, gallery.width + 18);
   if (people.length) width = Math.max(width, 168);
-  width = Math.min(width, options.maxWidth || 320);
+  const maxWidth = Math.max(options.maxWidth || 320, hasGallery ? gallery.width + 18 : 0);
+  width = Math.min(width, maxWidth);
   const peopleHeight = people.length ? 28 + Math.ceil(people.length / 2) * 20 : 0;
   const titleHeight = hasGallery ? 20 : 26;
   const height = titleHeight + (hasGallery ? gallery.height + 10 : 0) + peopleHeight;
@@ -10566,6 +10617,7 @@ function normalizePhotoRecord(source) {
       buffer: resource.buffer || null
     },
     original: normalizePhotoOriginal(source.original),
+    capturedAt: typeof source.capturedAt === "string" ? source.capturedAt : (typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString()),
     createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString()
   };
 }

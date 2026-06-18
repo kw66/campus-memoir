@@ -693,7 +693,8 @@ button:disabled {
   position: relative;
   --photo-ratio: 1.333333;
   --photo-natural-width: 9999px;
-  width: min(100%, var(--photo-natural-width));
+  --photo-max-height: min(58vh, 560px);
+  width: min(100%, var(--photo-natural-width), calc(var(--photo-max-height) * var(--photo-ratio)));
   max-width: 100%;
   min-width: 0;
   padding: 0;
@@ -2065,6 +2066,10 @@ textarea.game-input {
   .photo-list {
     min-height: 220px;
     max-height: 52vh;
+  }
+
+  .photo-tile {
+    --photo-max-height: min(46vh, 420px);
   }
 
   .game-actions.dense {
