@@ -568,9 +568,7 @@ const els = {
   mapEmpty: document.querySelector("#mapEmpty"),
   mapActions: document.querySelector("#mapActions"),
   mapPhotoButton: document.querySelector("#mapPhotoButton"),
-  mapPhotoMarkersToggle: document.querySelector("#mapPhotoMarkersToggle"),
-  mapInteractionMarkersToggle: document.querySelector("#mapInteractionMarkersToggle"),
-  mapPeopleMarkersToggle: document.querySelector("#mapPeopleMarkersToggle"),
+  mapAnnotationToggle: document.querySelector("#mapAnnotationToggle"),
   mapExplorationGridToggle: document.querySelector("#mapExplorationGridToggle"),
   panelHeader: document.querySelector("#panelHeader"),
   panelKicker: document.querySelector("#panelKicker"),
@@ -863,20 +861,8 @@ function bindEvents() {
   els.mapPhotoButton.addEventListener("click", () => {
     createPhotoSpotAtPlayer();
   });
-  els.mapPhotoMarkersToggle.addEventListener("change", () => {
-    state.gameData.settings.showPhotoMarkers = els.mapPhotoMarkersToggle.checked;
-    markGameDirty({ defer: true });
-    renderGamePanel({ force: true });
-    queueDraw();
-  });
-  els.mapInteractionMarkersToggle.addEventListener("change", () => {
-    state.gameData.settings.showInteractionMarkers = els.mapInteractionMarkersToggle.checked;
-    markGameDirty({ defer: true });
-    renderGamePanel({ force: true });
-    queueDraw();
-  });
-  els.mapPeopleMarkersToggle.addEventListener("change", () => {
-    state.gameData.settings.showPeopleMarkers = els.mapPeopleMarkersToggle.checked;
+  els.mapAnnotationToggle.addEventListener("change", () => {
+    setMapAnnotationsVisible(els.mapAnnotationToggle.checked);
     markGameDirty({ defer: true });
     renderGamePanel({ force: true });
     queueDraw();
@@ -4062,6 +4048,20 @@ function hasLitPhotoSpotMemory(spot) {
   return Boolean(spot?.photos?.length);
 }
 
+function showMapAnnotations() {
+  const settings = state.gameData.settings || {};
+  return settings.showInteractionMarkers !== false
+    && settings.showPhotoMarkers !== false
+    && settings.showPeopleMarkers !== false;
+}
+
+function setMapAnnotationsVisible(visible) {
+  const value = Boolean(visible);
+  state.gameData.settings.showPhotoMarkers = value;
+  state.gameData.settings.showInteractionMarkers = value;
+  state.gameData.settings.showPeopleMarkers = value;
+}
+
 function renderGamePanel(options = {}) {
   const school = getSelectedSchool();
   const visible = Boolean(school && state.mapImage && !state.editorEnabled);
@@ -4072,9 +4072,7 @@ function renderGamePanel(options = {}) {
   els.zoomReadout.hidden = visible && insideBuilding;
   els.explorationProgress.hidden = !visible || insideBuilding;
   updateExplorationProgressUi();
-  els.mapPhotoMarkersToggle.checked = state.gameData.settings.showPhotoMarkers !== false;
-  els.mapInteractionMarkersToggle.checked = state.gameData.settings.showInteractionMarkers !== false;
-  els.mapPeopleMarkersToggle.checked = state.gameData.settings.showPeopleMarkers !== false;
+  els.mapAnnotationToggle.checked = showMapAnnotations();
   els.mapExplorationGridToggle.checked = state.gameData.settings.showExplorationGrid === true;
   if (!visible) return;
   els.gamePanel.classList.toggle("inside-building", insideBuilding);
@@ -4098,9 +4096,7 @@ function renderGamePanel(options = {}) {
     spotSelectedPhotoId: state.gameData.selectedSpotPhotoId || "",
     spotEditPhotoId: state.selectedSpotPhotoForEditId || "",
     spotEntrance: spot ? getPhotoSpotEntrance(spot)?.buildingId || "" : "",
-    marker: state.gameData.settings.showPhotoMarkers,
-    structureMarker: state.gameData.settings.showInteractionMarkers,
-    peopleMarker: state.gameData.settings.showPeopleMarkers,
+    annotations: showMapAnnotations(),
     selectedTargetKey: selectedTarget?.key || "",
     nearbyTargets: state.currentNearbyInteractionTargets.map((item) => item.key).join(","),
     buildingId: state.gameData.selectedBuildingId,
@@ -8430,14 +8426,14 @@ function drawExplorationGridOverlay(ctx) {
 }
 
 function drawGamePhotoMarkers(ctx) {
-  const showFarMarkers = state.gameData.settings.showPhotoMarkers !== false;
+  const showAnnotations = showMapAnnotations();
   const playerRadius = state.gameData.player.radius || DEFAULT_PLAYER_RADIUS;
   for (const spot of state.gameData.photoSpots) {
     const screen = imageToScreen(spot);
     const radius = Math.max(7, (spot.radius || playerRadius) * state.view.scale * 0.36);
     if (screen.x < -radius || screen.y < -radius || screen.x > state.canvasSize.width + radius || screen.y > state.canvasSize.height + radius) continue;
     const active = spot.id === state.gameData.selectedPhotoSpotId || spot.id === state.currentNearbyPhotoSpotId;
-    if (!active && !showFarMarkers) continue;
+    if (!active && !showAnnotations) continue;
     ctx.save();
     ctx.fillStyle = active ? "rgba(226, 118, 77, 0.95)" : "rgba(255, 250, 240, 0.88)";
     ctx.strokeStyle = active ? "#8f3f2d" : "rgba(31, 85, 78, 0.88)";
@@ -8463,28 +8459,25 @@ function drawGamePhotoMarkers(ctx) {
 }
 
 function drawGamePhotoLabels(ctx) {
-  const showFarMarkers = state.gameData.settings.showPhotoMarkers !== false;
-  const showPhotoLabels = showFarMarkers && state.gameData.settings.showInteractionMarkers !== false;
-  if (!showPhotoLabels) return;
+  const showAnnotations = showMapAnnotations();
+  if (!showAnnotations) return;
   const playerRadius = state.gameData.player.radius || DEFAULT_PLAYER_RADIUS;
   for (const spot of state.gameData.photoSpots) {
-    if (!spot.name && !getPhotoSpotDisplayName(spot)) continue;
     const screen = imageToScreen(spot);
     const radius = Math.max(7, (spot.radius || playerRadius) * state.view.scale * 0.36);
     if (screen.x < -radius || screen.y < -radius || screen.x > state.canvasSize.width + radius || screen.y > state.canvasSize.height + radius) continue;
     const active = spot.id === state.gameData.selectedPhotoSpotId || spot.id === state.currentNearbyPhotoSpotId;
-    if (!active && !showFarMarkers) continue;
-    drawGameLabel(ctx, getPhotoSpotDisplayName(spot), screen.x, screen.y - radius - 17, {
+    drawPhotoSpotMarkerCard(ctx, spot, screen, {
       selected: active,
-      maxWidth: 180,
-      font: "800 12px Microsoft YaHei, sans-serif"
+      nearby: active,
+      yOffset: -radius - 8
     });
   }
 }
 
 function drawNearbyBuildingHints(ctx, editData) {
   const nearby = new Set(state.currentNearbyBuildingIds);
-  const showNames = state.gameData.settings.showInteractionMarkers !== false;
+  const showNames = showMapAnnotations();
   if (!nearby.size && !showNames) return;
   for (const region of editData.structureRegions || []) {
     if (region.visible === false || !isInteractiveStructureType(region.type || "custom")) continue;
@@ -8520,7 +8513,7 @@ function drawNearbyBuildingHints(ctx, editData) {
 
 function drawNearbyBuildingLabels(ctx, editData) {
   const nearby = new Set(state.currentNearbyBuildingIds);
-  const showNames = state.gameData.settings.showInteractionMarkers !== false;
+  const showNames = showMapAnnotations();
   if (!showNames) return;
   for (const region of editData.structureRegions || []) {
     if (region.visible === false || !isInteractiveStructureType(region.type || "custom")) continue;
@@ -8541,12 +8534,64 @@ function drawNearbyBuildingLabels(ctx, editData) {
   }
 }
 
+function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
+  const label = getPhotoSpotDisplayName(spot);
+  const photo = getFirstPhoto(spot);
+  const image = photo ? getCachedPhotoImage(photo) : null;
+  ctx.save();
+  ctx.font = "800 12px Microsoft YaHei, sans-serif";
+  const labelWidth = Math.min(ctx.measureText(label).width + 20, 180);
+  const hasThumb = Boolean(photo);
+  const thumbW = hasThumb ? 58 : 0;
+  const thumbH = hasThumb ? 42 : 0;
+  const countLabel = `${spot.photos?.length || 0}张`;
+  const countWidth = ctx.measureText(countLabel).width + 20;
+  let width = Math.max(82, labelWidth, countWidth, hasThumb ? thumbW + 20 : 0);
+  width = Math.min(width, 180);
+  const height = 24 + (hasThumb ? thumbH + 8 : 18);
+  const x = screen.x - width / 2;
+  const y = screen.y + (options.yOffset || -46) - height;
+  const selected = Boolean(options.selected);
+  ctx.fillStyle = selected ? "rgba(31, 85, 78, 0.94)" : "rgba(255, 250, 240, 0.88)";
+  ctx.strokeStyle = selected ? "rgba(31, 85, 78, 0.38)" : "rgba(31, 85, 78, 0.18)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, 7);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = selected ? "#fffaf0" : "#1d2a24";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, screen.x, y + 13, width - 10);
+  let cursorY = y + 24;
+  if (hasThumb) {
+    const thumbX = screen.x - thumbW / 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(thumbX, cursorY + 4, thumbW, thumbH, 5);
+    ctx.clip();
+    ctx.fillStyle = "rgba(232, 225, 211, 0.9)";
+    ctx.fillRect(thumbX, cursorY + 4, thumbW, thumbH);
+    if (image) drawCoverImage(ctx, image, thumbX, cursorY + 4, thumbW, thumbH);
+    ctx.restore();
+    ctx.strokeStyle = selected ? "rgba(255, 250, 240, 0.45)" : "rgba(31, 85, 78, 0.16)";
+    ctx.beginPath();
+    ctx.roundRect(thumbX, cursorY + 4, thumbW, thumbH, 5);
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = selected ? "rgba(255, 250, 240, 0.82)" : "rgba(31, 85, 78, 0.72)";
+    ctx.font = "800 10px Microsoft YaHei, sans-serif";
+    ctx.fillText(countLabel, screen.x, cursorY + 8, width - 10);
+  }
+  ctx.restore();
+}
+
 function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
   const building = state.gameData.buildings[region.id] || null;
   const label = getStructureInteractionLabel(region);
   const photo = getFirstPhoto(building);
   const image = photo ? getCachedPhotoImage(photo) : null;
-  const people = state.gameData.settings.showPeopleMarkers !== false ? getBuildingPeople(building) : [];
+  const people = showMapAnnotations() ? getBuildingPeople(building) : [];
   const font = options.font || "800 13px Microsoft YaHei, sans-serif";
   ctx.save();
   ctx.font = font;
@@ -8806,7 +8851,7 @@ function drawInteriorScene(ctx) {
     ctx.fillStyle = "#667064";
     ctx.font = "700 12px Microsoft YaHei, sans-serif";
     ctx.fillText(`${room.type || "场地"}  ${room.people.length} 人  ${room.photos.length} 图`, x + 78, y + 54, cardW - 90);
-    if (state.gameData.settings.showPeopleMarkers !== false && room.people.length) {
+    if (showMapAnnotations() && room.people.length) {
       drawPeopleMarkerList(ctx, room.people.map((person) => ({ person, room })), x + cardW / 2, y + 82, {
         maxWidth: cardW - 24,
         limit: 4
@@ -9611,9 +9656,12 @@ function normalizeGameData(source) {
     portrait: normalizePhotoRecord(player.portrait) || null
   };
   const settings = source.settings && typeof source.settings === "object" ? source.settings : {};
-  base.settings.showPhotoMarkers = settings.showPhotoMarkers !== false;
-  base.settings.showInteractionMarkers = settings.showInteractionMarkers !== false;
-  base.settings.showPeopleMarkers = settings.showPeopleMarkers !== false;
+  const showAnnotations = settings.showPhotoMarkers !== false
+    && settings.showInteractionMarkers !== false
+    && settings.showPeopleMarkers !== false;
+  base.settings.showPhotoMarkers = showAnnotations;
+  base.settings.showInteractionMarkers = showAnnotations;
+  base.settings.showPeopleMarkers = showAnnotations;
   base.settings.showExplorationGrid = settings.showExplorationGrid === true;
   const location = source.location && typeof source.location === "object" ? source.location : {};
   base.location = {
@@ -11014,6 +11062,7 @@ function getGameTextState() {
     selectedSpotPhotoId: state.gameData.selectedSpotPhotoId || "",
     selectedSpotPhotoForEditId: state.selectedSpotPhotoForEditId || "",
     nearbyPhotoSpotId: state.currentNearbyPhotoSpotId || "",
+    showAnnotations: showMapAnnotations(),
     showPhotoMarkers: state.gameData.settings.showPhotoMarkers,
     showInteractionMarkers: state.gameData.settings.showInteractionMarkers,
     showPeopleMarkers: state.gameData.settings.showPeopleMarkers,
