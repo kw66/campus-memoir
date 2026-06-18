@@ -43,7 +43,12 @@ const PHOTO_SPOT_NAME_PREFIX = "拍照点";
 const DEFAULT_BUILDING_MAP_PHOTO_LIMIT = 6;
 const MAP_MARKER_PHOTO_MIN_SCALE = 0.22;
 const MAP_MARKER_PHOTO_MAX_SCALE = 2;
-const INTERIOR_ROOM_CARD_GAP = 16;
+const INTERIOR_MAP_WIDTH = 1000;
+const INTERIOR_MAP_HEIGHT = 1000;
+const INTERIOR_MAP_PADDING = 0;
+const INTERIOR_PLAYER_RADIUS = 22;
+const INTERIOR_MOVE_TARGET_STOP_DISTANCE = 8;
+const INTERIOR_WALK_SPEED_FACTOR = 0.82;
 const EXPLORATION_TARGET_GRID_COUNT = 52;
 const EXPLORATION_MIN_GRID_SIZE = 90;
 const EXPLORATION_MAX_GRID_SIZE = 240;
@@ -179,7 +184,6 @@ const VENUE_TYPE_RULES = {
 
 const PERSON_TYPES = ["老师", "同学", "舍友", "同门", "导师", "朋友", "恋人", "店员", "自己", "自定义"];
 const ITEM_TYPES = ["物品", "交通工具", "运动器材", "菜", "货物", "工位", "项目", "自定义"];
-const DORM_RELATION_TYPES = ["自己的", "朋友的", "恋人的", "同学的", "自定义"];
 
 const BUILDING_CATEGORY_RULES = {
   dormitory: {
@@ -776,13 +780,57 @@ async function init() {
         queueDraw();
       },
       initializeGameForCurrentMap,
+      setupInteriorTest: async () => {
+        await window.__campusMemoirDebug.setupTestSchool();
+        const editData = getSelectedEditData();
+        const buildingRegion = normalizeRegion({
+          id: "debug-building",
+          name: "图书教育中心",
+          type: "building",
+          walkable: false,
+          color: TYPE_STYLES.building.line,
+          areas: [{ kind: "rect", x: 210, y: 120, width: 180, height: 150 }]
+        });
+        editData.structureRegions = [buildingRegion];
+        const building = getOrCreateBuildingMemory("debug-building");
+        building.customName = "图书教育中心";
+        building.rooms = ["寝室", "实验室", "自习室", "健身房"].map((type, index) => normalizeRoom({
+          id: `debug-room-${index + 1}`,
+          name: index === 1 ? "课题组实验室" : type,
+          type,
+          createdAt: new Date().toISOString()
+        }));
+        building.rooms[0].people.push(normalizePerson({ id: "debug-person-self", name: "我", type: "自己" }));
+        building.rooms[1].people.push(normalizePerson({ id: "debug-person-labmate", name: "同门A", type: "同门" }));
+        building.rooms[3].items.push(normalizeMemoryItem({ id: "debug-item-treadmill", name: "跑步机", type: "运动器材" }));
+        building.interiorPlayer = { x: 250, y: 250 };
+        state.gameData.location = { kind: "building", buildingId: "debug-building", roomId: building.rooms[0].id };
+        state.gameData.selectedBuildingId = "debug-building";
+        state.gameData.selectedRoomId = building.rooms[0].id;
+        state.editorEnabled = false;
+        els.mapEmpty.hidden = true;
+        els.missingMapActions.hidden = true;
+        clearMoveTarget();
+        fitImageToView();
+        renderEditorState();
+        renderGamePanel({ force: true });
+        queueDraw();
+      },
       updateNearbyGameContext,
       followPlayer,
       renderGamePanel,
+      updateGameMovement,
+      updateInteriorMovement,
+      getMovementVector,
+      getCurrentMovementPoint,
+      setMoveTarget,
       setMoveTargetFromClick,
+      setInteriorMoveTargetFromClick,
       findMoveTargetNear,
       findStartableMoveTarget,
       resolvePlayerMove,
+      screenToInterior,
+      getInteriorRoomLayout,
       screenToImage,
       queueDraw
     };
@@ -2456,6 +2504,7 @@ function setGameViewToDefaultFollow() {
 
 function followPlayer() {
   if (!state.mapImage || state.editorEnabled) return;
+  if (state.gameData.location.kind === "building") return;
   const { width, height } = state.canvasSize;
   const player = state.gameData.player;
   state.view.x = width / 2 - player.x * state.view.scale;
@@ -2487,15 +2536,21 @@ function setMoveTarget(target) {
     clearMoveTarget();
     return;
   }
+  const origin = getCurrentMovementPoint();
   state.moveTarget = target;
   state.moveTargetPath = [];
   state.moveTargetPathIndex = 0;
-  state.moveTargetBestDistance = distance(state.gameData.player, target);
+  state.moveTargetBestDistance = distance(origin, target);
   state.moveTargetBestWaypointDistance = state.moveTargetBestDistance;
   state.moveTargetStuckSeconds = 0;
-  state.moveTargetStuckOrigin = { x: state.gameData.player.x, y: state.gameData.player.y };
+  state.moveTargetStuckOrigin = { x: origin.x, y: origin.y };
   state.moveTargetRepathSeconds = 0;
   state.moveTargetPathCooldownSeconds = 0;
+}
+
+function getCurrentMovementPoint() {
+  if (state.gameData.location.kind === "building") return getInteriorPlayer();
+  return state.gameData.player;
 }
 
 function resetMoveTargetStuckWatch(point = state.gameData.player) {
@@ -2565,6 +2620,7 @@ function updateGameMovement(dt) {
 }
 
 function updateGameMovementCore(dt) {
+  if (state.gameData.location.kind === "building") return updateInteriorMovement(dt);
   const autoMove = state.moveTarget && !state.movementKeys.size;
   if (autoMove) {
     state.moveTargetPathCooldownSeconds = Math.max(0, state.moveTargetPathCooldownSeconds - dt);
@@ -2657,6 +2713,33 @@ function updateGameMovementCore(dt) {
   if (contextChanged || targetReached) renderGamePanel();
   queueDraw();
   return true;
+}
+
+function updateInteriorMovement(dt) {
+  const building = getSelectedBuildingMemory();
+  if (!building) return false;
+  const player = getInteriorPlayer(building);
+  if (state.moveTarget && !state.movementKeys.size && distance(player, state.moveTarget) <= INTERIOR_MOVE_TARGET_STOP_DISTANCE) {
+    clearMoveTarget();
+  }
+  const vector = getMovementVector();
+  if (!vector.x && !vector.y) return false;
+  const previous = { x: player.x, y: player.y };
+  const speed = (Number(state.gameData.player.walkSpeed) || DEFAULT_WALK_SPEED) * WALK_SPEED_FACTOR * INTERIOR_WALK_SPEED_FACTOR;
+  const target = clampInteriorPoint({
+    x: player.x + vector.x * speed * dt,
+    y: player.y + vector.y * speed * dt
+  });
+  building.interiorPlayer = target;
+  if (state.moveTarget && !state.movementKeys.size && distance(target, state.moveTarget) <= INTERIOR_MOVE_TARGET_STOP_DISTANCE) {
+    clearMoveTarget();
+  }
+  const moved = distance(previous, target) >= MOVE_APPLY_MIN_DISTANCE;
+  const roomChanged = syncSelectedRoomFromInteriorPlayer({ silent: true });
+  if (moved) markGameDirty({ defer: true, keepExplorationCache: true });
+  if (roomChanged) renderGamePanel({ force: true });
+  queueDraw();
+  return moved || roomChanged;
 }
 
 function resolvePlayerMove(origin, direction, distanceValue) {
@@ -3148,7 +3231,7 @@ function getMovementVector() {
   if (state.movementKeys.has("ArrowUp") || state.movementKeys.has("KeyW")) y -= 1;
   if (state.movementKeys.has("ArrowDown") || state.movementKeys.has("KeyS")) y += 1;
   if (!x && !y && state.moveTarget) {
-    const player = state.gameData.player;
+    const player = getCurrentMovementPoint();
     const target = getActiveMoveTargetPoint();
     x = target.x - player.x;
     y = target.y - player.y;
@@ -3643,7 +3726,6 @@ function shouldRefreshNearbyGameContext() {
 function updateNearbyGameContext() {
   const previousKey = getNearbyContextKey();
   if (state.gameData.location.kind === "building") {
-    clearMoveTarget();
     const buildingId = state.gameData.location.buildingId || state.gameData.selectedBuildingId || "";
     state.currentNearbyInteractionTargets = [];
     state.currentNearbyPhotoSpotId = "";
@@ -4080,6 +4162,145 @@ function getPersonMarkerLabel(person, room = null) {
   return relation && name && name !== relation ? `${relation}${name}` : name || relation || "人物";
 }
 
+function getInteriorPlayer(building = getSelectedBuildingMemory()) {
+  if (!building) return { x: INTERIOR_MAP_WIDTH / 2, y: INTERIOR_MAP_HEIGHT / 2 };
+  building.interiorPlayer = normalizeInteriorPlayer(building.interiorPlayer);
+  return building.interiorPlayer;
+}
+
+function getInteriorGridDimensions(count, aspect = state.canvasSize.width / Math.max(1, state.canvasSize.height)) {
+  if (count <= 1) return { cols: 1, rows: 1 };
+  if (count === 2) return aspect >= 1 ? { cols: 2, rows: 1 } : { cols: 1, rows: 2 };
+  if (count <= 4) return { cols: 2, rows: 2 };
+  const cols = Math.max(1, Math.ceil(Math.sqrt(count * Math.max(0.7, aspect))));
+  const rows = Math.max(1, Math.ceil(count / cols));
+  return { cols, rows };
+}
+
+function getInteriorRoomLayout(building = getSelectedBuildingMemory()) {
+  const rooms = building?.rooms || [];
+  const count = Math.max(1, rooms.length || 1);
+  const { cols, rows } = getInteriorGridDimensions(count);
+  const gap = rooms.length > 1 ? 10 : 0;
+  const cellW = (INTERIOR_MAP_WIDTH - gap * (cols - 1)) / cols;
+  const cellH = (INTERIOR_MAP_HEIGHT - gap * (rows - 1)) / rows;
+  const cells = rooms.map((room, index) => {
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+    return {
+      room,
+      index,
+      col,
+      row,
+      x: col * (cellW + gap),
+      y: row * (cellH + gap),
+      width: cellW,
+      height: cellH
+    };
+  });
+  return { cols, rows, gap, cellW, cellH, cells, width: INTERIOR_MAP_WIDTH, height: INTERIOR_MAP_HEIGHT };
+}
+
+function getInteriorCellForPoint(point, building = getSelectedBuildingMemory()) {
+  const layout = getInteriorRoomLayout(building);
+  for (const cell of layout.cells) {
+    if (
+      point.x >= cell.x
+      && point.x <= cell.x + cell.width
+      && point.y >= cell.y
+      && point.y <= cell.y + cell.height
+    ) {
+      return cell;
+    }
+  }
+  if (!layout.cells.length) return null;
+  let best = layout.cells[0];
+  let bestDistance = Infinity;
+  for (const cell of layout.cells) {
+    const dx = point.x < cell.x ? cell.x - point.x : point.x > cell.x + cell.width ? point.x - (cell.x + cell.width) : 0;
+    const dy = point.y < cell.y ? cell.y - point.y : point.y > cell.y + cell.height ? point.y - (cell.y + cell.height) : 0;
+    const d = Math.hypot(dx, dy);
+    if (d < bestDistance) {
+      best = cell;
+      bestDistance = d;
+    }
+  }
+  return best;
+}
+
+function syncSelectedRoomFromInteriorPlayer(options = {}) {
+  const building = getSelectedBuildingMemory();
+  if (!building?.rooms?.length) return false;
+  const player = getInteriorPlayer(building);
+  const cell = getInteriorCellForPoint(player, building);
+  const roomId = cell?.room?.id || "";
+  if (!roomId || roomId === state.gameData.selectedRoomId) return false;
+  state.gameData.selectedRoomId = roomId;
+  state.gameData.location.roomId = roomId;
+  state.gameData.selectedItemId = "";
+  state.gameData.selectedPersonId = "";
+  if (!options.silent) renderGamePanel({ force: true });
+  return true;
+}
+
+function moveInteriorPlayerToRoom(roomId) {
+  const building = getSelectedBuildingMemory();
+  if (!building?.rooms?.length) return;
+  const cell = getInteriorRoomLayout(building).cells.find((entry) => entry.room.id === roomId);
+  if (!cell) return;
+  const player = getInteriorPlayer(building);
+  player.x = cell.x + cell.width / 2;
+  player.y = cell.y + cell.height / 2;
+  state.gameData.selectedRoomId = roomId;
+  state.gameData.location.roomId = roomId;
+  state.gameData.selectedItemId = "";
+  state.gameData.selectedPersonId = "";
+  clearMoveTarget();
+  markGameDirty({ defer: true });
+  renderGamePanel({ force: true });
+  queueDraw();
+}
+
+function getInteriorCanvasRect() {
+  const margin = 18;
+  const titleSpace = 0;
+  const availableW = Math.max(1, state.canvasSize.width - margin * 2);
+  const availableH = Math.max(1, state.canvasSize.height - margin * 2 - titleSpace);
+  const scale = Math.min(availableW / INTERIOR_MAP_WIDTH, availableH / INTERIOR_MAP_HEIGHT);
+  const width = INTERIOR_MAP_WIDTH * scale;
+  const height = INTERIOR_MAP_HEIGHT * scale;
+  return {
+    x: (state.canvasSize.width - width) / 2,
+    y: (state.canvasSize.height - height) / 2,
+    width,
+    height,
+    scale
+  };
+}
+
+function interiorToScreen(point) {
+  const rect = getInteriorCanvasRect();
+  return {
+    x: rect.x + point.x * rect.scale,
+    y: rect.y + point.y * rect.scale
+  };
+}
+
+function screenToInterior(screenX, screenY) {
+  const rect = getInteriorCanvasRect();
+  return clampInteriorPoint({
+    x: (screenX - rect.x) / rect.scale,
+    y: (screenY - rect.y) / rect.scale
+  });
+}
+
+function clampInteriorPoint(point) {
+  return {
+    x: clamp(Number(point?.x) || 0, INTERIOR_MAP_PADDING, INTERIOR_MAP_WIDTH - INTERIOR_MAP_PADDING),
+    y: clamp(Number(point?.y) || 0, INTERIOR_MAP_PADDING, INTERIOR_MAP_HEIGHT - INTERIOR_MAP_PADDING)
+  };
+}
+
 function isDormRoom(room) {
   return room?.type === "寝室";
 }
@@ -4126,8 +4347,18 @@ function getFirstPhoto(entity) {
   return Array.isArray(entity?.photos) && entity.photos.length ? entity.photos[0] : null;
 }
 
+function getActivePhoto(entity) {
+  if (!Array.isArray(entity?.photos) || !entity.photos.length) return null;
+  const index = clampInt(entity.activePhotoIndex || 0, 0, entity.photos.length - 1);
+  return entity.photos[index] || entity.photos[0] || null;
+}
+
 function getRepresentativePhotoUrl(entity) {
   return getPhotoUrl(getFirstPhoto(entity));
+}
+
+function getRepresentativePhotoImage(entity) {
+  return getCachedPhotoImage(getFirstPhoto(entity));
 }
 
 function getCachedPhotoImage(photo) {
@@ -4456,104 +4687,6 @@ function drawMapMarkerGallery(ctx, layout, centerX, topY, options = {}) {
     }
     y += rowHeight + layout.gap;
   }
-}
-
-function getInteriorRoomCardLayout() {
-  const margin = 28;
-  const availableWidth = Math.max(1, state.canvasSize.width - margin * 2 - 44);
-  const cols = Math.max(1, Math.min(2, Math.floor((state.canvasSize.width - margin * 2) / 360)));
-  const cardW = Math.max(260, (availableWidth - (cols - 1) * INTERIOR_ROOM_CARD_GAP) / cols);
-  const cardH = 248;
-  return {
-    margin,
-    cols,
-    cardW,
-    cardH,
-    gap: INTERIOR_ROOM_CARD_GAP,
-    startX: margin + 22,
-    startY: margin + 62
-  };
-}
-
-function getInteriorRoomPhotoEntries(room, limit = 6) {
-  if (!room) return [];
-  const entries = [
-    ...getMapMarkerPhotoEntries(room, { label: "场景", source: "room" }),
-    ...(room.items || []).flatMap((entry) => getMapMarkerPhotoEntries(entry, {
-      label: getItemDisplayName(entry),
-      source: "item"
-    })),
-    ...(room.people || []).map((person) => {
-      const personPhoto = person.photo || person.portrait;
-      return personPhoto ? {
-        photo: personPhoto,
-        label: getPersonDisplayName(person),
-        source: "person"
-      } : null;
-    }).filter(Boolean)
-  ];
-  return entries.slice(0, limit);
-}
-
-function drawInteriorRoomGallery(ctx, entries, x, y, width, height, options = {}) {
-  if (!entries.length || width <= 0 || height <= 0) return;
-  const selected = Boolean(options.selected);
-  const gap = 8;
-  const photos = entries.slice(0, 4).map((entry) => ({
-    ...entry,
-    image: getCachedPhotoImage(entry.photo)
-  }));
-  const ratios = photos.map((entry) => getPhotoImageRatio(entry.image, 4 / 3));
-  if (photos.length > 2 && ratios[0] < 0.8) ratios[0] = Math.max(ratios[0], 0.82);
-  const singleRowHeight = getPhotoRowHeight(ratios, width, gap, height);
-  if (singleRowHeight >= 70 || photos.length <= 2) {
-    drawInteriorPhotoRow(ctx, photos, ratios, x, y + (height - singleRowHeight) / 2, width, singleRowHeight, gap, selected);
-    return;
-  }
-  const topCount = photos.length === 3 ? 1 : 2;
-  const topPhotos = photos.slice(0, topCount);
-  const bottomPhotos = photos.slice(topCount);
-  const topRatios = ratios.slice(0, topCount);
-  const bottomRatios = ratios.slice(topCount);
-  const topHeight = getPhotoRowHeight(topRatios, width, gap, (height - gap) * 0.54);
-  const bottomHeight = getPhotoRowHeight(bottomRatios, width, gap, height - gap - topHeight);
-  const totalHeight = topHeight + gap + bottomHeight;
-  const startY = y + Math.max(0, (height - totalHeight) / 2);
-  drawInteriorPhotoRow(ctx, topPhotos, topRatios, x, startY, width, topHeight, gap, selected);
-  drawInteriorPhotoRow(ctx, bottomPhotos, bottomRatios, x, startY + topHeight + gap, width, bottomHeight, gap, selected);
-}
-
-function getPhotoRowHeight(ratios, width, gap, maxHeight) {
-  const ratioSum = ratios.reduce((sum, ratio) => sum + Math.max(0.2, ratio), 0);
-  const availableWidth = Math.max(1, width - gap * Math.max(0, ratios.length - 1));
-  return Math.max(1, Math.min(maxHeight, availableWidth / Math.max(0.2, ratioSum)));
-}
-
-function drawInteriorPhotoRow(ctx, photos, ratios, x, y, width, height, gap, selected) {
-  const rowWidth = ratios.reduce((sum, ratio) => sum + ratio * height, 0) + gap * Math.max(0, photos.length - 1);
-  let cursorX = x + Math.max(0, (width - rowWidth) / 2);
-  photos.forEach((entry, index) => {
-    const tileWidth = Math.max(1, ratios[index] * height);
-    drawInteriorRoomPhotoTile(ctx, entry, cursorX, y, tileWidth, height, { selected, radius: 7 });
-    cursorX += tileWidth + gap;
-  });
-}
-
-function drawInteriorRoomPhotoTile(ctx, entry, x, y, width, height, options = {}) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, options.radius || 6);
-  ctx.clip();
-  ctx.fillStyle = "rgba(242, 234, 220, 0.96)";
-  ctx.fillRect(x, y, width, height);
-  const inset = Math.min(5, Math.max(2, Math.min(width, height) * 0.04));
-  drawContainImage(ctx, entry.image, x + inset, y + inset, Math.max(1, width - inset * 2), Math.max(1, height - inset * 2));
-  ctx.restore();
-  ctx.strokeStyle = options.selected ? "rgba(31, 85, 78, 0.58)" : "rgba(29, 42, 36, 0.18)";
-  ctx.lineWidth = options.selected ? 1.5 : 1;
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, options.radius || 6);
-  ctx.stroke();
 }
 
 function getPhotoImageRatio(image, fallback = 1) {
@@ -5069,15 +5202,16 @@ function renderInteriorPanelHtml(building, room, item, person) {
   if (state.gameData.location.kind !== "building" || !building) return "";
   const rule = getBuildingRule(building);
   const venueRule = getVenueRule(room, building);
-  const dormSelected = isDormRoom(room);
   const selectedIsSelf = isSelfPerson(person);
   const roomOptions = renderOptions(rule.roomTypes, "自定义");
   const roomTypeOptions = renderOptions(rule.roomTypes, room?.type || "自定义");
-  const roomRelationOptions = renderOptions(DORM_RELATION_TYPES, room?.relation || "自己的");
-  const itemTypeOptions = renderOptions(ITEM_TYPES, item?.type || venueRule.itemLabel);
-  const personTypeOptions = renderOptions(PERSON_TYPES, person?.type || venueRule.personLabel);
+  const itemTypeOptions = renderOptions(ITEM_TYPES, item?.type || "物品");
+  const personTypeOptions = renderOptions(PERSON_TYPES, person?.type || "同学");
+  const region = getStructureRegionById(state.gameData.location.buildingId);
+  const buildingName = getBuildingDisplayName(region, building);
+  const entranceCount = getBuildingEntranceSpots(building.id).length;
   const rooms = building.rooms.map((item) => `
-    <button class="room-chip${item.id === state.gameData.selectedRoomId ? " active" : ""}" type="button" data-game-action="selectRoom" data-room-id="${escapeAttr(item.id)}">进入${escapeHtml(getRoomDisplayName(item))}</button>
+    <button class="room-chip${item.id === state.gameData.selectedRoomId ? " active" : ""}" type="button" data-game-action="selectRoom" data-room-id="${escapeAttr(item.id)}">${escapeHtml(getRoomDisplayName(item))}</button>
   `).join("");
   const roomItems = room?.items?.map((entry) => `
     <button class="item-chip${entry.id === state.gameData.selectedItemId ? " active" : ""}" type="button" data-game-action="selectItem" data-item-id="${escapeAttr(entry.id)}">${escapeHtml(getItemDisplayName(entry, venueRule.itemLabel))}</button>
@@ -5085,7 +5219,12 @@ function renderInteriorPanelHtml(building, room, item, person) {
   const people = room?.people?.map((item) => `
     <button class="person-chip${item.id === state.gameData.selectedPersonId ? " active" : ""}" type="button" data-game-action="selectPerson" data-person-id="${escapeAttr(item.id)}">${escapeHtml(getPersonDisplayName(item))}</button>
   `).join("") || "";
-  const roomPhotoUrl = getRepresentativePhotoUrl(room);
+  const roomPhotoList = renderPhotoTileListHtml(room?.photos || [], {
+    activeId: getActivePhoto(room)?.id || "",
+    selectedId: "",
+    action: "selectRoomPhoto",
+    showDate: true
+  });
   const dormPlayerPortraitHtml = selectedIsSelf ? `
         <div class="player-portrait-card">
           <span class="player-portrait-status">${state.gameData.player.portrait ? "地图大头贴已设置" : "地图仍使用默认圆点"}</span>
@@ -5093,70 +5232,79 @@ function renderInteriorPanelHtml(building, room, item, person) {
           <button class="secondary-button" type="button" data-game-action="uploadPlayerPortrait">选大头贴</button>
         </div>
   ` : "";
-  const itemPhotoUrl = getRepresentativePhotoUrl(item);
+  const itemPhotoList = renderPhotoTileListHtml(item?.photos || [], {
+    activeId: getActivePhoto(item)?.id || "",
+    selectedId: "",
+    action: "selectItemPhoto",
+    showDate: true
+  });
   const personPhotoUrl = person?.photo ? getPhotoUrl(person.photo) : "";
-  const interiorTitle = getInteriorPanelTitle(building, room);
-  const interiorSubtitle = getInteriorPanelSubtitle(building, room);
   return `
     <section class="game-card interior-card">
       <div class="game-card-head">
         <span class="interior-title">
-          <strong>${escapeHtml(interiorTitle)}</strong>
-          <small>${escapeHtml(interiorSubtitle)}</small>
+          <strong>${escapeHtml(buildingName)}</strong>
+          <small>${building.rooms.length} 个场所${entranceCount ? ` / ${entranceCount} 个入口` : ""}</small>
         </span>
         <button class="secondary-button compact" type="button" data-game-action="exitBuilding">返回地图</button>
       </div>
-      <div class="room-add-row">
-        <input class="game-input" data-game-field="newRoomName" type="text" placeholder="名称">
-        <select class="game-input" data-game-field="newRoomType">${roomOptions}</select>
-        <button class="secondary-button" type="button" data-game-action="addRoom">加场地</button>
+      <div class="interior-building-summary">
+        <div class="interior-building-meta">
+          <span>关联入口</span>
+          <strong>${entranceCount || 0}</strong>
+        </div>
+        <div class="interior-building-meta">
+          <span>关联场所</span>
+          <strong>${building.rooms.length || 0}</strong>
+        </div>
       </div>
-      <div class="room-chip-row">${rooms || `<span class="muted-inline">添加场地后管理照片、物品和人物</span>`}</div>
+      <div class="room-chip-row venue-chip-row">${rooms || `<span class="muted-inline">添加场所后，室内地图会自动划分区域</span>`}</div>
+      <div class="room-add-row interior-add-row">
+        <input class="game-input" data-game-field="newRoomName" type="text" placeholder="场所名称">
+        <select class="game-input" data-game-field="newRoomType">${roomOptions}</select>
+        <button class="secondary-button" type="button" data-game-action="addRoom">加场所</button>
+      </div>
       <div class="room-detail" ${room ? "" : "hidden"}>
         <div class="room-fields">
           <input class="game-input" data-game-field="roomName" type="text" value="${escapeAttr(room?.name || "")}" placeholder="场地名称">
           <select class="game-input" data-game-field="roomType">${roomTypeOptions}</select>
-          <select class="game-input" data-game-field="roomRelation" ${room?.type === "寝室" ? "" : "hidden"}>${roomRelationOptions}</select>
         </div>
-        <div class="mini-photo wide${roomPhotoUrl ? " has-photo" : ""}">
-          ${roomPhotoUrl ? `<img src="${roomPhotoUrl}" alt="">` : `<span>场地照片</span>`}
-        </div>
-        <div class="game-actions dense">
-          <button class="secondary-button" type="button" data-game-action="captureRoomPhoto">拍照</button>
-          <button class="secondary-button" type="button" data-game-action="uploadRoomPhoto">相册</button>
-          <button class="secondary-button" type="button" data-game-action="prevRoomPhoto" ${!room || room.photos.length < 2 ? "disabled" : ""}>上一张</button>
-          <button class="secondary-button" type="button" data-game-action="nextRoomPhoto" ${!room || room.photos.length < 2 ? "disabled" : ""}>下一张</button>
+        <div class="game-actions dense interior-photo-actions">
+          <button class="secondary-button" type="button" data-game-action="captureRoomPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
+          <button class="secondary-button" type="button" data-game-action="uploadRoomPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteRoomPhoto" ${!room || !room.photos.length ? "disabled" : ""}>删图</button>
-          <button class="secondary-button danger" type="button" data-game-action="deleteRoom">删场地</button>
+          <button class="secondary-button danger" type="button" data-game-action="deleteRoom">删场所</button>
+        </div>
+        <div class="photo-list interior-photo-list" data-photo-list="room">
+          ${roomPhotoList || `<div class="photo-empty list-empty">还没有场所照片</div>`}
         </div>
         <div class="item-add-row">
-          <input class="game-input" data-game-field="newItemName" type="text" placeholder="${escapeAttr(venueRule.itemLabel)}">
-          <button class="secondary-button" type="button" data-game-action="addItem">加${escapeHtml(venueRule.itemLabel)}</button>
+          <input class="game-input" data-game-field="newItemName" type="text" placeholder="物品名称">
+          <button class="secondary-button" type="button" data-game-action="addItem">加物品</button>
         </div>
-        <div class="item-chip-row">${roomItems || `<span class="muted-inline">添加${escapeHtml(venueRule.itemLabel)}后可保存照片和备注</span>`}</div>
+        <div class="item-chip-row">${roomItems || `<span class="muted-inline">通过当前场所添加物品</span>`}</div>
         <div class="item-detail" ${item ? "" : "hidden"}>
           <div class="item-top">
-            <div class="item-photo${itemPhotoUrl ? " has-photo" : ""}">${itemPhotoUrl ? `<img src="${itemPhotoUrl}" alt="">` : `<span>照片</span>`}</div>
             <div class="item-fields">
-              <input class="game-input" data-game-field="itemName" type="text" value="${escapeAttr(item?.name || "")}" placeholder="${escapeAttr(venueRule.itemLabel)}名称">
+              <input class="game-input" data-game-field="itemName" type="text" value="${escapeAttr(item?.name || "")}" placeholder="物品名称">
               <select class="game-input" data-game-field="itemType">${itemTypeOptions}</select>
               <textarea class="game-input" data-game-field="itemDescription" placeholder="备注">${escapeHtml(item?.description || "")}</textarea>
             </div>
           </div>
-          <div class="game-actions dense">
-            <button class="secondary-button" type="button" data-game-action="captureItemPhoto">拍照</button>
-            <button class="secondary-button" type="button" data-game-action="uploadItemPhoto">相册</button>
-            <button class="secondary-button" type="button" data-game-action="prevItemPhoto" ${!item || item.photos.length < 2 ? "disabled" : ""}>上一张</button>
-            <button class="secondary-button" type="button" data-game-action="nextItemPhoto" ${!item || item.photos.length < 2 ? "disabled" : ""}>下一张</button>
+          <div class="game-actions dense interior-photo-actions">
+            <button class="secondary-button" type="button" data-game-action="captureItemPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
+            <button class="secondary-button" type="button" data-game-action="uploadItemPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
             <button class="secondary-button" type="button" data-game-action="interactItem">互动</button>
             <button class="secondary-button danger" type="button" data-game-action="deleteItemPhoto" ${!item || !item.photos.length ? "disabled" : ""}>删图</button>
             <button class="secondary-button danger" type="button" data-game-action="deleteItem">删除</button>
           </div>
+          <div class="photo-list interior-photo-list" data-photo-list="item">
+            ${itemPhotoList || `<div class="photo-empty list-empty">还没有物品照片</div>`}
+          </div>
         </div>
         <div class="person-add-row">
-          <input class="game-input" data-game-field="newPersonName" type="text" placeholder="${escapeAttr(venueRule.personLabel)}">
-          <button class="secondary-button" type="button" data-game-action="addPerson">加${escapeHtml(venueRule.personLabel)}</button>
-          ${dormSelected && !getSelfPersonInRoom(room) ? `<button class="secondary-button" type="button" data-game-action="addSelfPerson">加自己</button>` : ""}
+          <input class="game-input" data-game-field="newPersonName" type="text" placeholder="人物名称">
+          <button class="secondary-button" type="button" data-game-action="addPerson">加人物</button>
         </div>
         <div class="person-chip-row">${people}</div>
         <div class="person-detail" ${person ? "" : "hidden"}>
@@ -5170,8 +5318,8 @@ function renderInteriorPanelHtml(building, room, item, person) {
           </div>
           ${dormPlayerPortraitHtml}
           <div class="game-actions dense">
-            <button class="secondary-button" type="button" data-game-action="capturePersonPhoto">拍照</button>
-            <button class="secondary-button" type="button" data-game-action="uploadPersonPhoto">相册</button>
+            <button class="secondary-button" type="button" data-game-action="capturePersonPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
+            <button class="secondary-button" type="button" data-game-action="uploadPersonPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
             <button class="secondary-button" type="button" data-game-action="sayHello">你好</button>
             <button class="secondary-button danger" type="button" data-game-action="deletePerson">删人物</button>
           </div>
@@ -5220,7 +5368,7 @@ function onGamePanelChange(event) {
   const field = event.target.closest("[data-game-field]");
   if (!field) return;
   const name = field.dataset.gameField;
-  if (name === "roomType" || name === "roomRelation") {
+  if (name === "roomType") {
     saveSelectedRoom();
   } else if (name === "itemType") {
     saveSelectedItem();
@@ -5291,6 +5439,9 @@ function handleGameAction(action, button) {
     case "selectRoom":
       selectRoom(button.dataset.roomId || "");
       return;
+    case "selectRoomPhoto":
+      selectRoomPhoto(button.dataset.photoId || "");
+      return;
     case "captureRoomPhoto":
       els.roomCameraInput.click();
       return;
@@ -5298,24 +5449,18 @@ function handleGameAction(action, button) {
       els.roomPhotoInput.click();
       return;
     case "capturePlayerPortrait":
-      if (!isDormRoom(getSelectedRoom()) || !isSelfPerson(getSelectedPerson())) {
-        setGameNotice("请先在寝室里选择自己");
+      if (!isSelfPerson(getSelectedPerson())) {
+        setGameNotice("请先把人物关系设为自己");
         return;
       }
       els.playerPortraitCameraInput.click();
       return;
     case "uploadPlayerPortrait":
-      if (!isDormRoom(getSelectedRoom()) || !isSelfPerson(getSelectedPerson())) {
-        setGameNotice("请先在寝室里选择自己");
+      if (!isSelfPerson(getSelectedPerson())) {
+        setGameNotice("请先把人物关系设为自己");
         return;
       }
       els.playerPortraitInput.click();
-      return;
-    case "prevRoomPhoto":
-      cycleRoomPhoto(-1);
-      return;
-    case "nextRoomPhoto":
-      cycleRoomPhoto(1);
       return;
     case "deleteRoomPhoto":
       deleteSelectedRoomPhoto();
@@ -5329,17 +5474,14 @@ function handleGameAction(action, button) {
     case "selectItem":
       selectItem(button.dataset.itemId || "");
       return;
+    case "selectItemPhoto":
+      selectItemPhoto(button.dataset.photoId || "");
+      return;
     case "captureItemPhoto":
       els.itemCameraInput.click();
       return;
     case "uploadItemPhoto":
       els.itemPhotoInput.click();
-      return;
-    case "prevItemPhoto":
-      cycleItemPhoto(-1);
-      return;
-    case "nextItemPhoto":
-      cycleItemPhoto(1);
       return;
     case "interactItem":
       interactWithSelectedItem();
@@ -5352,9 +5494,6 @@ function handleGameAction(action, button) {
       return;
     case "addPerson":
       addPersonToSelectedRoom();
-      return;
-    case "addSelfPerson":
-      addSelfPersonToDorm();
       return;
     case "selectPerson":
       selectPerson(button.dataset.personId || "");
@@ -5992,12 +6131,15 @@ function enterFromActivePhotoSpot() {
   }
   const building = entranceTarget.building;
   const regionId = entranceTarget.region.id;
+  building.interiorPlayer = normalizeInteriorPlayer(building.interiorPlayer);
   state.gameData.location = { kind: "building", buildingId: regionId, roomId: "" };
   state.gameData.selectedBuildingId = regionId;
   state.gameData.selectedPhotoSpotId = "";
-  state.gameData.selectedRoomId = building.rooms[0]?.id || "";
+  state.gameData.selectedRoomId = getInteriorCellForPoint(building.interiorPlayer, building)?.room?.id || building.rooms[0]?.id || "";
+  state.gameData.location.roomId = state.gameData.selectedRoomId;
   state.gameData.selectedItemId = "";
   state.gameData.selectedPersonId = "";
+  clearMoveTarget();
   markGameDirty();
   renderGamePanel({ force: true });
   queueDraw();
@@ -6008,6 +6150,7 @@ function exitBuilding() {
   state.gameData.selectedRoomId = "";
   state.gameData.selectedItemId = "";
   state.gameData.selectedPersonId = "";
+  clearMoveTarget();
   updateNearbyGameContext();
   followPlayer();
   markGameDirty();
@@ -6032,6 +6175,9 @@ function addRoomToSelectedBuilding() {
   state.gameData.selectedItemId = "";
   state.gameData.selectedPersonId = "";
   building.updatedAt = new Date().toISOString();
+  if (state.gameData.location.kind === "building") {
+    moveInteriorPlayerToRoom(room.id);
+  }
   markGameDirty();
   renderGamePanel({ force: true });
   queueDraw();
@@ -6040,6 +6186,10 @@ function addRoomToSelectedBuilding() {
 function selectRoom(roomId) {
   const building = getSelectedBuildingMemory();
   if (!building?.rooms.some((room) => room.id === roomId)) return;
+  if (state.gameData.location.kind === "building") {
+    moveInteriorPlayerToRoom(roomId);
+    return;
+  }
   state.gameData.selectedRoomId = roomId;
   state.gameData.location.roomId = roomId;
   state.gameData.selectedItemId = "";
@@ -6054,10 +6204,9 @@ function saveSelectedRoom(options = {}) {
   if (!room) return;
   const name = els.gamePanel.querySelector('[data-game-field="roomName"]')?.value?.trim() || "";
   const type = els.gamePanel.querySelector('[data-game-field="roomType"]')?.value || room.type || "自定义";
-  const relation = els.gamePanel.querySelector('[data-game-field="roomRelation"]')?.value || room.relation || "自己的";
   room.name = name || type;
   room.type = type;
-  room.relation = type === "寝室" ? relation : "";
+  room.relation = "";
   room.updatedAt = new Date().toISOString();
   markGameDirty(options.defer ? { defer: true } : {});
   if (!options.silent) renderGamePanel({ force: true });
@@ -6072,6 +6221,17 @@ async function addPhotosToSelectedRoom(files) {
   room.activePhotoIndex = Math.max(0, room.photos.length - 1);
   room.updatedAt = new Date().toISOString();
   markGameDirty();
+  renderGamePanel({ force: true });
+  queueDraw();
+}
+
+function selectRoomPhoto(photoId) {
+  const room = getSelectedRoom();
+  if (!room?.photos?.length) return;
+  const index = room.photos.findIndex((photo) => photo.id === photoId);
+  if (index < 0) return;
+  room.activePhotoIndex = index;
+  markGameDirty({ defer: true });
   renderGamePanel({ force: true });
   queueDraw();
 }
@@ -6105,6 +6265,14 @@ function deleteSelectedRoom() {
   state.gameData.location.roomId = state.gameData.selectedRoomId;
   state.gameData.selectedItemId = "";
   state.gameData.selectedPersonId = "";
+  if (state.gameData.selectedRoomId && state.gameData.location.kind === "building") {
+    const cell = getInteriorRoomLayout(building).cells.find((entry) => entry.room.id === state.gameData.selectedRoomId);
+    if (cell) {
+      const player = getInteriorPlayer(building);
+      player.x = cell.x + cell.width / 2;
+      player.y = cell.y + cell.height / 2;
+    }
+  }
   markGameDirty();
   renderGamePanel({ force: true });
   queueDraw();
@@ -6113,13 +6281,11 @@ function deleteSelectedRoom() {
 function addItemToSelectedRoom() {
   const room = getSelectedRoom();
   if (!room) return;
-  const building = getSelectedBuildingMemory();
-  const rule = getVenueRule(room, building);
   const name = els.gamePanel.querySelector('[data-game-field="newItemName"]')?.value?.trim() || "";
   const item = normalizeMemoryItem({
     id: createId("item"),
-    name: name || rule.itemLabel,
-    type: rule.itemLabel,
+    name: name || "物品",
+    type: "物品",
     createdAt: new Date().toISOString()
   });
   room.items.push(item);
@@ -6145,6 +6311,16 @@ async function addPhotosToSelectedItem(files) {
   item.activePhotoIndex = Math.max(0, item.photos.length - 1);
   item.updatedAt = new Date().toISOString();
   markGameDirty();
+  renderGamePanel({ force: true });
+}
+
+function selectItemPhoto(photoId) {
+  const item = getSelectedItem();
+  if (!item?.photos?.length) return;
+  const index = item.photos.findIndex((photo) => photo.id === photoId);
+  if (index < 0) return;
+  item.activePhotoIndex = index;
+  markGameDirty({ defer: true });
   renderGamePanel({ force: true });
 }
 
@@ -6208,39 +6384,11 @@ function interactWithSelectedItem() {
 function addPersonToSelectedRoom() {
   const room = getSelectedRoom();
   if (!room) return;
-  const building = getSelectedBuildingMemory();
-  const rule = getVenueRule(room, building);
   const name = els.gamePanel.querySelector('[data-game-field="newPersonName"]')?.value?.trim() || "";
   const person = normalizePerson({
     id: createId("person"),
-    name: name || rule.personLabel,
-    type: rule.personLabel,
-    createdAt: new Date().toISOString()
-  });
-  room.people.push(person);
-  state.gameData.selectedPersonId = person.id;
-  room.updatedAt = new Date().toISOString();
-  markGameDirty();
-  renderGamePanel({ force: true });
-}
-
-function addSelfPersonToDorm() {
-  const room = getSelectedRoom();
-  if (!isDormRoom(room)) {
-    setGameNotice("只有寝室可以设置自己");
-    renderGamePanel({ force: true });
-    return;
-  }
-  const existing = getSelfPersonInRoom(room);
-  if (existing) {
-    state.gameData.selectedPersonId = existing.id;
-    renderGamePanel({ force: true });
-    return;
-  }
-  const person = normalizePerson({
-    id: createId("person"),
-    name: "自己",
-    type: "自己",
+    name: name || "人物",
+    type: "同学",
     createdAt: new Date().toISOString()
   });
   room.people.push(person);
@@ -6271,8 +6419,8 @@ async function setPlayerPortraitFromDorm(file) {
   const building = getSelectedBuildingMemory();
   const room = getSelectedRoom();
   const person = getSelectedPerson();
-  if (!building || !isDormRoom(room) || !isSelfPerson(person)) {
-    setGameNotice("请先在寝室里选择自己");
+  if (!building || !room || !isSelfPerson(person)) {
+    setGameNotice("请先把人物关系设为自己");
     return;
   }
   const photo = await createPhotoFromFile(file, { kind: "portrait", buildingId: building.id, roomId: room.id, personId: person.id });
@@ -6291,10 +6439,11 @@ function saveSelectedPerson(options = {}) {
   const room = getSelectedRoom();
   person.name = els.gamePanel.querySelector('[data-game-field="personName"]')?.value?.trim() || person.name;
   const requestedType = els.gamePanel.querySelector('[data-game-field="personType"]')?.value || person.type || "同学";
-  if (isSelfPerson(person)) {
+  if (requestedType === "自己") {
+    for (const entry of room?.people || []) {
+      if (entry.id !== person.id && isSelfPerson(entry)) entry.type = "同学";
+    }
     person.type = "自己";
-  } else if (requestedType === "自己") {
-    person.type = isDormRoom(room) && !getSelfPersonInRoom(room) ? "自己" : "同学";
   } else {
     person.type = requestedType;
   }
@@ -7729,10 +7878,30 @@ function handleGamePointerUp(event) {
 
 function handleGameCanvasClick(imagePoint) {
   if (state.gameData.location.kind === "building") {
-    selectInteriorRoomAtScreen(state.gamePointerDown || null);
+    setInteriorMoveTargetFromClick(state.gamePointerDown || null);
     return;
   }
   setMoveTargetFromClick(imagePoint);
+}
+
+function setInteriorMoveTargetFromClick(pointer) {
+  if (!pointer) return;
+  const target = screenToInterior(pointer.startX, pointer.startY);
+  setMoveTarget(target);
+  state.movementKeys.clear();
+  const building = getSelectedBuildingMemory();
+  if (building?.rooms?.length) {
+    const cell = getInteriorCellForPoint(target, building);
+    if (cell?.room) {
+      state.gameData.selectedRoomId = cell.room.id;
+      state.gameData.location.roomId = cell.room.id;
+      state.gameData.selectedItemId = "";
+      state.gameData.selectedPersonId = "";
+      renderGamePanel({ force: true });
+    }
+  }
+  startGameLoop();
+  queueDraw();
 }
 
 function setMoveTargetFromClick(imagePoint) {
@@ -7815,24 +7984,6 @@ function findWalkableTargetAlongPlayerLine(origin, target) {
     if (isClickableMoveTarget(candidate)) return candidate;
   }
   return null;
-}
-
-function selectInteriorRoomAtScreen(pointer) {
-  const building = getSelectedBuildingMemory();
-  if (!building?.rooms?.length || !pointer) return;
-  const { cols, cardW, cardH, gap, startX, startY } = getInteriorRoomCardLayout();
-  const x = pointer.startX;
-  const y = pointer.startY;
-  for (let index = 0; index < building.rooms.length; index++) {
-    const col = index % cols;
-    const row = Math.floor(index / cols);
-    const cardX = startX + col * (cardW + gap);
-    const cardY = startY + row * (cardH + gap);
-    if (x >= cardX && x <= cardX + cardW && y >= cardY && y <= cardY + cardH) {
-      selectRoom(building.rooms[index].id);
-      return;
-    }
-  }
 }
 
 function shouldPan(event) {
@@ -9738,55 +9889,245 @@ function drawMoveTarget(ctx) {
 function drawInteriorScene(ctx) {
   const building = getSelectedBuildingMemory();
   const region = getStructureRegionById(state.gameData.location.buildingId);
-  const layout = getInteriorRoomCardLayout();
+  const layout = getInteriorRoomLayout(building);
+  const rect = getInteriorCanvasRect();
   ctx.save();
   ctx.fillStyle = "#e8e1d3";
   ctx.fillRect(0, 0, state.canvasSize.width, state.canvasSize.height);
   ctx.fillStyle = "#fffaf0";
   ctx.strokeStyle = "#c9bca7";
   ctx.lineWidth = 1;
-  const margin = 28;
-  ctx.fillRect(margin, margin, state.canvasSize.width - margin * 2, state.canvasSize.height - margin * 2);
-  ctx.strokeRect(margin, margin, state.canvasSize.width - margin * 2, state.canvasSize.height - margin * 2);
-  ctx.fillStyle = "#1f554e";
-  ctx.font = "800 18px Microsoft YaHei, sans-serif";
-  ctx.fillText(getBuildingDisplayName(region, building), layout.margin + 18, layout.margin + 34);
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.width, rect.height);
+  ctx.clip();
   const rooms = building?.rooms || [];
-  rooms.forEach((room, index) => {
-    const col = index % layout.cols;
-    const row = Math.floor(index / layout.cols);
-    const x = layout.startX + col * (layout.cardW + layout.gap);
-    const y = layout.startY + row * (layout.cardH + layout.gap);
+  if (!rooms.length) {
+    ctx.fillStyle = "#f2eadc";
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    ctx.fillStyle = "#1f554e";
+    ctx.font = "900 18px Microsoft YaHei, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(getBuildingDisplayName(region, building), rect.x + rect.width / 2, rect.y + rect.height / 2 - 14, rect.width - 40);
+    ctx.fillStyle = "rgba(31, 85, 78, 0.68)";
+    ctx.font = "800 13px Microsoft YaHei, sans-serif";
+    ctx.fillText("在右侧添加场所后，这里会自动划分室内区域", rect.x + rect.width / 2, rect.y + rect.height / 2 + 18, rect.width - 40);
+  }
+  for (const cell of layout.cells) {
+    const room = cell.room;
+    const x = rect.x + cell.x * rect.scale;
+    const y = rect.y + cell.y * rect.scale;
+    const w = cell.width * rect.scale;
+    const h = cell.height * rect.scale;
     const active = room.id === state.gameData.selectedRoomId;
-    ctx.fillStyle = active ? "#e8f0e7" : "#fffdf6";
-    ctx.strokeStyle = active ? "#1f554e" : "#d7cbb8";
-    ctx.lineWidth = active ? 2 : 1;
-    ctx.beginPath();
-    ctx.roundRect(x, y, layout.cardW, layout.cardH, 8);
-    ctx.fill();
-    ctx.stroke();
-    const entries = getInteriorRoomPhotoEntries(room, 6);
-    const thumbW = layout.cardW - 24;
-    const thumbH = layout.cardH - 58;
-    const thumbX = x + 12;
-    const thumbY = y + 16;
+    const image = getRepresentativePhotoImage(room);
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(thumbX, thumbY, thumbW, thumbH, 7);
+    ctx.rect(x, y, w, h);
     ctx.clip();
-    ctx.fillStyle = "#f2eadc";
-    ctx.fillRect(thumbX, thumbY, thumbW, thumbH);
+    ctx.fillStyle = active ? "#e8f0e7" : "#f7efe2";
+    ctx.fillRect(x, y, w, h);
+    if (image && isPhotoImageReady(image)) {
+      drawCoverImage(ctx, image, x, y, w, h);
+      ctx.fillStyle = active ? "rgba(31, 85, 78, 0.18)" : "rgba(255, 250, 240, 0.12)";
+      ctx.fillRect(x, y, w, h);
+    } else {
+      drawInteriorFloorPattern(ctx, x, y, w, h, cell.index);
+    }
     ctx.restore();
-    drawInteriorRoomGallery(ctx, entries, thumbX + 8, thumbY + 8, thumbW - 16, thumbH - 16, { selected: active });
-    ctx.strokeStyle = active ? "rgba(31, 85, 78, 0.32)" : "rgba(29, 42, 36, 0.16)";
+    ctx.strokeStyle = active ? "#1f554e" : "rgba(31, 85, 78, 0.28)";
+    ctx.lineWidth = active ? 3 : 1.5;
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
+    drawInteriorRoomLabel(ctx, room, x, y, w, active);
+    drawInteriorRoomEntities(ctx, room, x, y, w, h, active);
+  }
+  drawInteriorMoveTarget(ctx);
+  drawInteriorPlayer(ctx);
+  ctx.restore();
+  ctx.fillStyle = "rgba(255, 250, 240, 0.88)";
+  ctx.strokeStyle = "rgba(31, 85, 78, 0.18)";
+  ctx.lineWidth = 1;
+  const label = getBuildingDisplayName(region, building);
+  ctx.font = "900 14px Microsoft YaHei, sans-serif";
+  const labelWidth = Math.min(ctx.measureText(label).width + 22, rect.width - 20);
+  ctx.beginPath();
+  ctx.roundRect(rect.x + 10, rect.y + 10, labelWidth, 30, 7);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#1f554e";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, rect.x + 21, rect.y + 25, labelWidth - 22);
+  ctx.restore();
+}
+
+function drawInteriorFloorPattern(ctx, x, y, width, height, index) {
+  const colors = ["#f4eadb", "#edf1e5", "#efe7d4", "#e8efe7", "#f1eadf"];
+  ctx.fillStyle = colors[index % colors.length];
+  ctx.fillRect(x, y, width, height);
+  ctx.save();
+  ctx.strokeStyle = "rgba(31, 85, 78, 0.06)";
+  ctx.lineWidth = 1;
+  const step = Math.max(34, Math.min(width, height) / 6);
+  for (let px = x; px <= x + width; px += step) {
     ctx.beginPath();
-    ctx.roundRect(thumbX, thumbY, thumbW, thumbH, 7);
+    ctx.moveTo(px, y);
+    ctx.lineTo(px, y + height);
     ctx.stroke();
-    ctx.fillStyle = "#1d2a24";
-    ctx.font = "800 14px Microsoft YaHei, sans-serif";
-    const textY = thumbY + thumbH + 22;
-    ctx.fillText(getRoomDisplayName(room), x + 14, textY, layout.cardW - 28);
+  }
+  for (let py = y; py <= y + height; py += step) {
+    ctx.beginPath();
+    ctx.moveTo(x, py);
+    ctx.lineTo(x + width, py);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawInteriorRoomLabel(ctx, room, x, y, width, active) {
+  const title = getRoomDisplayName(room);
+  const type = room?.type && room.type !== title ? room.type : "";
+  ctx.save();
+  ctx.font = "900 13px Microsoft YaHei, sans-serif";
+  const titleWidth = Math.min(width - 16, Math.max(72, ctx.measureText(title).width + (type ? 44 : 18)));
+  ctx.fillStyle = active ? "rgba(31, 85, 78, 0.92)" : "rgba(255, 250, 240, 0.88)";
+  ctx.strokeStyle = active ? "rgba(31, 85, 78, 0.36)" : "rgba(31, 85, 78, 0.16)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x + 8, y + 8, titleWidth, 28, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = active ? "#fffaf0" : "#1d2a24";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(title, x + 17, y + 22, titleWidth - (type ? 50 : 16));
+  if (type) {
+    ctx.fillStyle = active ? "rgba(255, 250, 240, 0.78)" : "rgba(31, 85, 78, 0.70)";
+    ctx.font = "800 10px Microsoft YaHei, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(type, x + 8 + titleWidth - 8, y + 22, 42);
+  }
+  ctx.restore();
+}
+
+function drawInteriorRoomEntities(ctx, room, x, y, width, height, active) {
+  const people = room?.people || [];
+  const items = room?.items || [];
+  const entries = [
+    ...people.map((person) => ({ kind: "person", person })),
+    ...items.slice(0, 4).map((item) => ({ kind: "item", item }))
+  ].slice(0, 10);
+  if (!entries.length) return;
+  const size = Math.max(20, Math.min(34, Math.min(width, height) / 9));
+  const gap = 6;
+  const cols = Math.max(1, Math.min(entries.length, Math.floor((width - 18) / (size + gap))));
+  const startX = x + 10;
+  const startY = y + height - Math.ceil(entries.length / cols) * (size + gap) - 10;
+  ctx.save();
+  entries.forEach((entry, index) => {
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+    const px = startX + col * (size + gap);
+    const py = startY + row * (size + gap);
+    if (entry.kind === "person") {
+      drawPersonMarker(ctx, entry.person, room, px, py, {
+        avatarSize: size,
+        width: size,
+        selected: active
+      });
+    } else {
+      const image = getRepresentativePhotoImage(entry.item);
+      ctx.beginPath();
+      ctx.roundRect(px, py, size, size, 6);
+      ctx.fillStyle = active ? "rgba(255, 250, 240, 0.90)" : "rgba(255, 250, 240, 0.78)";
+      ctx.fill();
+      if (image && isPhotoImageReady(image)) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(px, py, size, size, 6);
+        ctx.clip();
+        drawCoverImage(ctx, image, px, py, size, size);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = "#1f554e";
+        ctx.font = `900 ${Math.max(10, size * 0.42)}px Microsoft YaHei, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText((entry.item?.name || entry.item?.type || "物").slice(0, 1), px + size / 2, py + size / 2 + 0.5);
+      }
+      ctx.strokeStyle = active ? "rgba(31, 85, 78, 0.62)" : "rgba(31, 85, 78, 0.28)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(px, py, size, size, 6);
+      ctx.stroke();
+    }
   });
+  ctx.restore();
+}
+
+function drawInteriorPlayer(ctx) {
+  const building = getSelectedBuildingMemory();
+  if (!building) return;
+  const player = getInteriorPlayer(building);
+  const screen = interiorToScreen(player);
+  const rect = getInteriorCanvasRect();
+  const radius = Math.max(11, INTERIOR_PLAYER_RADIUS * rect.scale);
+  const coreRadius = Math.max(6, radius * PLAYER_COLLISION_RADIUS_FACTOR);
+  const portraitImage = state.gameData.player.portrait ? getCachedPhotoImage(state.gameData.player.portrait) : null;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255, 250, 240, 0.24)";
+  ctx.fill();
+  ctx.strokeStyle = "#1f554e";
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, coreRadius, 0, Math.PI * 2);
+  ctx.fillStyle = "#8dbf59";
+  ctx.fill();
+  if (portraitImage && isPhotoImageReady(portraitImage)) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, coreRadius, 0, Math.PI * 2);
+    ctx.clip();
+    drawCoverImage(ctx, portraitImage, screen.x - coreRadius, screen.y - coreRadius, coreRadius * 2, coreRadius * 2);
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, coreRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = "#fffaf0";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawInteriorMoveTarget(ctx) {
+  if (!state.moveTarget || state.gameData.location.kind !== "building") return;
+  const screen = interiorToScreen(state.moveTarget);
+  const rect = getInteriorCanvasRect();
+  if (screen.x < rect.x - 30 || screen.y < rect.y - 30 || screen.x > rect.x + rect.width + 30 || screen.y > rect.y + rect.height + 30) return;
+  ctx.save();
+  ctx.strokeStyle = "rgba(31, 85, 78, 0.78)";
+  ctx.fillStyle = "rgba(255, 250, 240, 0.68)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, 10, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(screen.x - 16, screen.y);
+  ctx.lineTo(screen.x - 5, screen.y);
+  ctx.moveTo(screen.x + 5, screen.y);
+  ctx.lineTo(screen.x + 16, screen.y);
+  ctx.moveTo(screen.x, screen.y - 16);
+  ctx.lineTo(screen.x, screen.y - 5);
+  ctx.moveTo(screen.x, screen.y + 5);
+  ctx.lineTo(screen.x, screen.y + 16);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -10700,6 +11041,7 @@ function normalizeGameBuilding(source, fallbackId) {
     photos: [],
     activePhotoIndex: 0,
     mapPhotoLimit: DEFAULT_BUILDING_MAP_PHOTO_LIMIT,
+    interiorPlayer: { x: INTERIOR_MAP_WIDTH / 2, y: INTERIOR_MAP_HEIGHT / 2 },
     entrances: [],
     rooms: [],
     capturedAt: new Date().toISOString(),
@@ -10713,11 +11055,20 @@ function normalizeGameBuilding(source, fallbackId) {
     photos: Array.isArray(source.photos) ? source.photos.map(normalizePhotoRecord).filter(Boolean) : [],
     activePhotoIndex: Number.isFinite(Number(source.activePhotoIndex)) ? Math.max(0, Math.floor(Number(source.activePhotoIndex))) : 0,
     mapPhotoLimit: Number.isFinite(Number(source.mapPhotoLimit)) ? clamp(Math.floor(Number(source.mapPhotoLimit)), 1, 12) : DEFAULT_BUILDING_MAP_PHOTO_LIMIT,
+    interiorPlayer: normalizeInteriorPlayer(source.interiorPlayer),
     entrances: Array.isArray(source.entrances) ? source.entrances.map(normalizeEntrance).filter(Boolean) : [],
     rooms: Array.isArray(source.rooms) ? source.rooms.map(normalizeRoom).filter(Boolean) : [],
     capturedAt: typeof source.capturedAt === "string" ? source.capturedAt : (typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString()),
     createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString(),
     updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : new Date().toISOString()
+  };
+}
+
+function normalizeInteriorPlayer(source) {
+  const point = source && typeof source === "object" ? source : {};
+  return {
+    x: Number.isFinite(Number(point.x)) ? clamp(Number(point.x), INTERIOR_MAP_PADDING, INTERIOR_MAP_WIDTH - INTERIOR_MAP_PADDING) : INTERIOR_MAP_WIDTH / 2,
+    y: Number.isFinite(Number(point.y)) ? clamp(Number(point.y), INTERIOR_MAP_PADDING, INTERIOR_MAP_HEIGHT - INTERIOR_MAP_PADDING) : INTERIOR_MAP_HEIGHT / 2
   };
 }
 
@@ -11968,9 +12319,12 @@ function getGameTextState() {
   const person = getSelectedPerson();
   const venueRule = getVenueRule(room, building);
   const exploration = getExplorationProgress();
+  const interiorPlayer = state.gameData.location.kind === "building" && building ? getInteriorPlayer(building) : null;
   return {
     mode: state.editorEnabled ? "editor" : state.gameData.location.kind,
-    coordinateSystem: "map image pixels, origin top-left, x right, y down",
+    coordinateSystem: state.gameData.location.kind === "building"
+      ? "interior pixels, origin top-left, x right, y down"
+      : "map image pixels, origin top-left, x right, y down",
     zoom: Number(state.view.scale.toFixed(3)),
     player: {
       x: Number((player.x || 0).toFixed(2)),
@@ -11979,6 +12333,11 @@ function getGameTextState() {
       walkSpeed: player.walkSpeed || DEFAULT_WALK_SPEED,
       portrait: Boolean(player.portrait)
     },
+    interiorPlayer: interiorPlayer ? {
+      x: Number(interiorPlayer.x.toFixed(2)),
+      y: Number(interiorPlayer.y.toFixed(2)),
+      radius: INTERIOR_PLAYER_RADIUS
+    } : null,
     moveTarget: state.moveTarget ? {
       x: Number(state.moveTarget.x.toFixed(2)),
       y: Number(state.moveTarget.y.toFixed(2))
@@ -12050,6 +12409,23 @@ function getGameTextState() {
 function getMovementDebugState(player) {
   const vector = getMovementVector();
   const target = state.moveTarget;
+  if (state.gameData.location.kind === "building") {
+    const interiorPlayer = getInteriorPlayer();
+    return {
+      playerCanMove: true,
+      targetCanMove: target ? isInteriorPointInBounds(target) : null,
+      vector: {
+        x: Number(vector.x.toFixed(3)),
+        y: Number(vector.y.toFixed(3))
+      },
+      interiorPlayer: {
+        x: Number(interiorPlayer.x.toFixed(2)),
+        y: Number(interiorPlayer.y.toFixed(2))
+      },
+      pathLength: 0,
+      pathIndex: 0
+    };
+  }
   return {
     playerCanMove: state.mapImage ? canPlayerMoveTo(player) : false,
     targetCanMove: state.mapImage && target ? canPlayerMoveTo(target) : null,
@@ -12062,6 +12438,16 @@ function getMovementDebugState(player) {
     pathLength: state.moveTargetPath?.length || 0,
     pathIndex: state.moveTargetPathIndex || 0
   };
+}
+
+function isInteriorPointInBounds(point) {
+  return Boolean(point
+    && Number.isFinite(Number(point.x))
+    && Number.isFinite(Number(point.y))
+    && point.x >= INTERIOR_MAP_PADDING
+    && point.y >= INTERIOR_MAP_PADDING
+    && point.x <= INTERIOR_MAP_WIDTH - INTERIOR_MAP_PADDING
+    && point.y <= INTERIOR_MAP_HEIGHT - INTERIOR_MAP_PADDING);
 }
 
 function clamp(value, min, max) {

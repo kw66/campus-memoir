@@ -1022,6 +1022,46 @@ textarea.game-input {
 .interior-card {
   overflow: auto;
   min-height: 0;
+  align-content: start;
+}
+
+.interior-building-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.interior-building-meta {
+  min-width: 0;
+  min-height: 44px;
+  padding: 7px 9px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid color-mix(in srgb, var(--line), transparent 16%);
+  border-radius: 7px;
+  background: #f8f2e7;
+}
+
+.interior-building-meta span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.interior-building-meta strong {
+  color: var(--accent-strong);
+  font-size: 17px;
+  line-height: 1;
+}
+
+.venue-chip-row {
+  max-height: 72px;
+  overflow: auto;
+}
+
+.interior-add-row {
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line), transparent 18%);
 }
 
 .room-add-row,
@@ -1046,7 +1086,7 @@ textarea.game-input {
 }
 
 .person-add-row {
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .item-top,
@@ -1080,6 +1120,21 @@ textarea.game-input {
 .person-fields {
   display: grid;
   gap: 7px;
+}
+
+.interior-photo-actions {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.interior-photo-list {
+  min-height: 220px;
+  max-height: min(56vh, 560px);
+  border-bottom: 1px solid color-mix(in srgb, var(--line), transparent 18%);
+  padding-bottom: 12px;
+}
+
+.item-detail .interior-photo-list {
+  max-height: min(44vh, 440px);
 }
 
 .player-portrait-card {
