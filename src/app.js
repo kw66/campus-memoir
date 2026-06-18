@@ -9293,8 +9293,7 @@ function drawGameScene(ctx, editData) {
   drawNearbyBuildingHints(ctx, editData);
   drawMoveTarget(ctx);
   drawPlayer(ctx);
-  drawNearbyBuildingLabels(ctx, editData);
-  drawGamePhotoLabels(ctx);
+  drawGameDepthSortedMapCards(ctx, editData);
 }
 
 function drawExplorationGridOverlay(ctx) {
@@ -9325,7 +9324,8 @@ function drawExplorationGridOverlay(ctx) {
 function drawGamePhotoMarkers(ctx) {
   const showAnnotations = showMapAnnotations();
   const playerRadius = state.gameData.player.radius || DEFAULT_PLAYER_RADIUS;
-  for (const spot of state.gameData.photoSpots) {
+  const spots = [...state.gameData.photoSpots].sort(compareMapDepthItems);
+  for (const spot of spots) {
     const screen = imageToScreen(spot);
     const radius = Math.max(7, (spot.radius || playerRadius) * state.view.scale * 0.36);
     if (screen.x < -radius || screen.y < -radius || screen.x > state.canvasSize.width + radius || screen.y > state.canvasSize.height + radius) continue;
@@ -9352,23 +9352,6 @@ function drawGamePhotoMarkers(ctx) {
     ctx.textBaseline = "middle";
     ctx.fillText(String(spot.photos.length || 0), screen.x, screen.y + 0.5);
     ctx.restore();
-  }
-}
-
-function drawGamePhotoLabels(ctx) {
-  const showAnnotations = showMapAnnotations();
-  if (!showAnnotations) return;
-  const playerRadius = state.gameData.player.radius || DEFAULT_PLAYER_RADIUS;
-  for (const spot of state.gameData.photoSpots) {
-    const screen = imageToScreen(spot);
-    const radius = Math.max(7, (spot.radius || playerRadius) * state.view.scale * 0.36);
-    if (screen.x < -radius || screen.y < -radius || screen.x > state.canvasSize.width + radius || screen.y > state.canvasSize.height + radius) continue;
-    const active = spot.id === state.gameData.selectedPhotoSpotId || spot.id === state.currentNearbyPhotoSpotId;
-    drawPhotoSpotMarkerCard(ctx, spot, screen, {
-      selected: active,
-      nearby: active,
-      yOffset: -radius - 8
-    });
   }
 }
 
@@ -9408,27 +9391,71 @@ function drawNearbyBuildingHints(ctx, editData) {
   }
 }
 
-function drawNearbyBuildingLabels(ctx, editData) {
+function drawGameDepthSortedMapCards(ctx, editData) {
   const nearby = new Set(state.currentNearbyBuildingIds);
   const showNames = showMapAnnotations();
   if (!showNames) return;
+  const cards = [];
+  const playerRadius = state.gameData.player.radius || DEFAULT_PLAYER_RADIUS;
+
   for (const region of editData.structureRegions || []) {
     if (region.visible === false || !isInteractiveStructureType(region.type || "custom")) continue;
     const bounds = getRegionLabelBounds(getRegionAreas(region));
     if (!bounds) continue;
-    const center = imageToScreen({
+    const anchor = {
       x: (bounds.left + bounds.right) / 2,
       y: (bounds.top + bounds.bottom) / 2
-    });
-    const isNearby = nearby.has(region.id);
-    const selected = region.id === state.gameData.selectedBuildingId;
-    drawBuildingMarkerCard(ctx, region, center, {
-      selected,
-      nearby: isNearby,
-      maxWidth: 340,
-      font: "800 13px Microsoft YaHei, sans-serif"
+    };
+    cards.push({
+      kind: "building",
+      id: region.id,
+      mapX: anchor.x,
+      mapY: bounds.bottom,
+      order: cards.length,
+      draw: () => {
+        const center = imageToScreen(anchor);
+        const isNearby = nearby.has(region.id);
+        const selected = region.id === state.gameData.selectedBuildingId;
+        drawBuildingMarkerCard(ctx, region, center, {
+          selected,
+          nearby: isNearby,
+          maxWidth: 340,
+          font: "800 13px Microsoft YaHei, sans-serif"
+        });
+      }
     });
   }
+
+  for (const spot of state.gameData.photoSpots) {
+    const screen = imageToScreen(spot);
+    const radius = Math.max(7, (spot.radius || playerRadius) * state.view.scale * 0.36);
+    if (screen.x < -radius || screen.y < -radius || screen.x > state.canvasSize.width + radius || screen.y > state.canvasSize.height + radius) continue;
+    const active = spot.id === state.gameData.selectedPhotoSpotId || spot.id === state.currentNearbyPhotoSpotId;
+    cards.push({
+      kind: "photoSpot",
+      id: spot.id,
+      mapX: spot.x,
+      mapY: spot.y,
+      order: cards.length,
+      draw: () => {
+        drawPhotoSpotMarkerCard(ctx, spot, screen, {
+          selected: active,
+          nearby: active,
+          yOffset: -radius - 8
+        });
+      }
+    });
+  }
+
+  cards.sort(compareMapDepthItems).forEach((card) => card.draw());
+}
+
+function compareMapDepthItems(a, b) {
+  const dy = (Number(a.mapY ?? a.y) || 0) - (Number(b.mapY ?? b.y) || 0);
+  if (Math.abs(dy) > 0.001) return dy;
+  const dx = (Number(a.mapX ?? a.x) || 0) - (Number(b.mapX ?? b.x) || 0);
+  if (Math.abs(dx) > 0.001) return dx;
+  return (Number(a.order) || 0) - (Number(b.order) || 0);
 }
 
 function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
