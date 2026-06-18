@@ -4061,6 +4061,15 @@ function getRoomDisplayName(room) {
   return room?.name || room?.type || "场地";
 }
 
+function getInteriorPanelTitle(building, room) {
+  return room ? getRoomDisplayName(room) : "建筑内部";
+}
+
+function getInteriorPanelSubtitle(building, room) {
+  const buildingName = building?.customName || "当前建筑";
+  return room?.type ? `${buildingName} / ${room.type}` : buildingName;
+}
+
 function getPersonDisplayName(person) {
   return person?.name || person?.type || "未命名";
 }
@@ -5086,10 +5095,15 @@ function renderInteriorPanelHtml(building, room, item, person) {
   ` : "";
   const itemPhotoUrl = getRepresentativePhotoUrl(item);
   const personPhotoUrl = person?.photo ? getPhotoUrl(person.photo) : "";
+  const interiorTitle = getInteriorPanelTitle(building, room);
+  const interiorSubtitle = getInteriorPanelSubtitle(building, room);
   return `
     <section class="game-card interior-card">
       <div class="game-card-head">
-        <strong>${escapeHtml(rule.label)}</strong>
+        <span class="interior-title">
+          <strong>${escapeHtml(interiorTitle)}</strong>
+          <small>${escapeHtml(interiorSubtitle)}</small>
+        </span>
         <button class="secondary-button compact" type="button" data-game-action="exitBuilding">返回地图</button>
       </div>
       <div class="room-add-row">
