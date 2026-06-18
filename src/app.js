@@ -3018,9 +3018,7 @@ function handleGameKeyUp(event) {
 
 function canPlayerMoveTo(point) {
   const touchesPriorityPath = isPlayerCircleTouchingPriorityPath(point);
-  if (touchesPriorityPath) {
-    if (!isPointOnVisibleMap(point)) return false;
-  } else if (!isPlayerCircleOnVisibleMap(point)) return false;
+  if (!isPointOnVisibleMap(point)) return false;
   const sample = samplePlayerCollisionAt(point);
   if (sample.walkable !== false) return true;
   return touchesPriorityPath;
@@ -11086,6 +11084,7 @@ function getGameTextState() {
       x: Number(state.moveTarget.x.toFixed(2)),
       y: Number(state.moveTarget.y.toFixed(2))
     } : null,
+    movementDebug: getMovementDebugState(player),
     follow: {
       screenX: state.mapImage ? Number(imageToScreen(player).x.toFixed(2)) : 0,
       screenY: state.mapImage ? Number(imageToScreen(player).y.toFixed(2)) : 0
@@ -11146,6 +11145,23 @@ function getGameTextState() {
       chatCount: person.chat.length
     } : null,
     playerPortrait: Boolean(player.portrait)
+  };
+}
+
+function getMovementDebugState(player) {
+  const vector = getMovementVector();
+  const target = state.moveTarget;
+  return {
+    playerCanMove: state.mapImage ? canPlayerMoveTo(player) : false,
+    targetCanMove: state.mapImage && target ? canPlayerMoveTo(target) : null,
+    vector: {
+      x: Number(vector.x.toFixed(3)),
+      y: Number(vector.y.toFixed(3))
+    },
+    stuckSeconds: Number(state.moveTargetStuckSeconds.toFixed(2)),
+    repathSeconds: Number(state.moveTargetRepathSeconds.toFixed(2)),
+    pathLength: state.moveTargetPath?.length || 0,
+    pathIndex: state.moveTargetPathIndex || 0
   };
 }
 
