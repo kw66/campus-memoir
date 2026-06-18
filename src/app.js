@@ -4843,12 +4843,12 @@ function renderPhotoPanelHtml(spot) {
         <input class="game-input" data-game-field="photoSpotDate" type="date" value="${escapeAttr(getPhotoSpotDateValue(spot))}">
       </div>
       ${entranceTarget ? `<div class="entrance-target">入口：${escapeHtml(getBuildingDisplayName(entranceTarget.region, entranceTarget.building))}</div>` : ""}
-      <div class="game-actions dense">
+      <div class="game-actions dense photo-actions">
         ${entranceTarget ? `<button class="primary-button" type="button" data-game-action="enterFromPhotoSpot" ${entranceActive ? "" : "disabled"}>进入</button>` : ""}
         <button class="secondary-button" type="button" data-game-action="moveSpotPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
         <button class="secondary-button" type="button" data-game-action="moveSpotPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
-        <button class="secondary-button" type="button" data-game-action="captureSpotPhoto">拍照</button>
-        <button class="secondary-button" type="button" data-game-action="uploadSpotPhoto">相册</button>
+        <button class="secondary-button" type="button" data-game-action="captureSpotPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
+        <button class="secondary-button" type="button" data-game-action="uploadSpotPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
         <button class="secondary-button danger" type="button" data-game-action="deletePhotoSpotSelected" ${canDeleteSpot || editSelectedId ? "" : "disabled"}>删除</button>
       </div>
       <div class="photo-list" data-photo-list="spot">
@@ -4898,7 +4898,7 @@ function getPhotoTileStyle(photo) {
   const height = Number(photo?.height || photo?.resource?.height);
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return "";
   const ratio = clamp(width / height, 0.15, 8);
-  return `--photo-ratio:${ratio.toFixed(6)};`;
+  return `--photo-ratio:${ratio.toFixed(6)};--photo-natural-width:${Math.round(width)}px;`;
 }
 
 function onGamePanelResourceLoad(event) {
@@ -4908,6 +4908,23 @@ function onGamePanelResourceLoad(event) {
   if (!tile || !img.naturalWidth || !img.naturalHeight) return;
   const ratio = clamp(img.naturalWidth / img.naturalHeight, 0.15, 8);
   tile.style.setProperty("--photo-ratio", ratio.toFixed(6));
+  tile.style.setProperty("--photo-natural-width", `${img.naturalWidth}px`);
+}
+
+function canUsePhotoSource(source) {
+  if (!window.File || !window.FileReader) return false;
+  if (source === "album") return Boolean(els.spotPhotoInput || els.buildingPhotoInput);
+  if (source !== "camera") return false;
+  const ua = navigator.userAgent || "";
+  const mobileLike = /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|MicroMessenger/i.test(ua);
+  const coarsePointer = window.matchMedia?.("(pointer: coarse)")?.matches === true;
+  return Boolean((els.spotCameraInput || els.buildingCameraInput) && (mobileLike || coarsePointer));
+}
+
+function getPhotoSourceDisabledAttr(source) {
+  if (canUsePhotoSource(source)) return "";
+  const message = source === "camera" ? "当前设备不支持直接拍照" : "当前浏览器不支持相册导入";
+  return ` disabled title="${escapeAttr(message)}"`;
 }
 
 function renderCampusInteractionHtml(region, building) {
@@ -4932,11 +4949,11 @@ function renderCampusInteractionHtml(region, building) {
           <span>地图显示</span>
           <input class="game-input" data-game-field="buildingMapPhotoLimit" type="number" min="1" max="12" step="1" value="${escapeAttr(building?.mapPhotoLimit || DEFAULT_BUILDING_MAP_PHOTO_LIMIT)}">
         </label>
-        <div class="game-actions dense">
+        <div class="game-actions dense photo-actions">
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
-          <button class="secondary-button" type="button" data-game-action="captureBuildingPhoto">拍照</button>
-          <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto">相册</button>
+          <button class="secondary-button" type="button" data-game-action="captureBuildingPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
+          <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteBuildingPhoto" ${!editSelectedId ? "disabled" : ""}>删图</button>
           ${showEntranceTools ? `<button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>` : ""}
         </div>
