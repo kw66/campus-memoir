@@ -2375,8 +2375,20 @@ function getSelectedResourceKeys() {
 
 function renderCurrentSchool() {
   const school = getSelectedSchool();
-  els.currentSchool.textContent = school ? school.name : "未选择学校";
-  els.currentSchool.hidden = state.gameData.location.kind === "building";
+  if (!school) {
+    els.currentSchool.textContent = "未选择学校";
+    els.currentSchool.hidden = false;
+    return;
+  }
+  if (state.gameData.location.kind === "building") {
+    const building = getSelectedBuildingMemory();
+    const region = getStructureRegionById(state.gameData.location.buildingId);
+    els.currentSchool.textContent = getBuildingDisplayName(region, building);
+    els.currentSchool.hidden = false;
+    return;
+  }
+  els.currentSchool.textContent = school.name;
+  els.currentSchool.hidden = false;
 }
 
 async function renderGameView(options = {}) {
@@ -5001,8 +5013,9 @@ function renderGamePanel(options = {}) {
   els.mapToolbar.hidden = !visible || insideBuilding;
   els.mapActions.hidden = !visible || insideBuilding;
   els.zoomReadout.hidden = visible && insideBuilding;
-  els.currentSchool.hidden = visible && insideBuilding;
+  els.currentSchool.hidden = false;
   els.explorationProgress.hidden = !visible || insideBuilding;
+  renderCurrentSchool();
   updateExplorationProgressUi();
   els.mapAnnotationToggle.checked = showMapAnnotations();
   els.mapExplorationGridToggle.checked = state.gameData.settings.showExplorationGrid === true;
@@ -6222,6 +6235,7 @@ function enterFromActivePhotoSpot() {
   state.gameData.selectedPersonId = "";
   clearMoveTarget();
   markGameDirty();
+  renderCurrentSchool();
   renderGamePanel({ force: true });
   queueDraw();
 }
@@ -6235,6 +6249,7 @@ function exitBuilding() {
   updateNearbyGameContext();
   followPlayer();
   markGameDirty();
+  renderCurrentSchool();
   renderGamePanel({ force: true });
   queueDraw();
 }
@@ -10139,20 +10154,6 @@ function drawInteriorScene(ctx) {
   drawInteriorMoveTarget(ctx);
   drawInteriorPlayer(ctx);
   ctx.restore();
-  ctx.fillStyle = "rgba(255, 250, 240, 0.88)";
-  ctx.strokeStyle = "rgba(31, 85, 78, 0.18)";
-  ctx.lineWidth = 1;
-  const label = getBuildingDisplayName(region, building);
-  ctx.font = "900 14px Microsoft YaHei, sans-serif";
-  const labelWidth = Math.min(ctx.measureText(label).width + 22, rect.width - 20);
-  ctx.beginPath();
-  ctx.roundRect(rect.x + 10, rect.y + 10, labelWidth, 30, 7);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = "#1f554e";
-  ctx.textAlign = "left";
-  ctx.textBaseline = "middle";
-  ctx.fillText(label, rect.x + 21, rect.y + 25, labelWidth - 22);
   ctx.restore();
 }
 
