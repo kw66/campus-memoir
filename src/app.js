@@ -7696,7 +7696,7 @@ function onCanvasClick(event) {
   if (!state.mapImage || state.editorEnabled) return;
   if (performance.now() - state.lastGamePointerClickHandledAt < 220) return;
   const point = getCanvasPoint(event);
-  handleGameCanvasClick(clampImagePoint(screenToImage(point.x, point.y)));
+  handleGameCanvasClick(point);
 }
 
 function startPinchGesture() {
@@ -7869,24 +7869,25 @@ function handleGamePointerUp(event) {
   state.lastGamePointerClickHandledAt = performance.now();
   if (!pointer.moved) {
     const point = getCanvasPoint(event);
-    handleGameCanvasClick(clampImagePoint(screenToImage(point.x, point.y)));
+    handleGameCanvasClick(point);
   }
   state.gamePointerDown = null;
   updateCanvasCursor();
   queueDraw();
 }
 
-function handleGameCanvasClick(imagePoint) {
+function handleGameCanvasClick(canvasPoint) {
   if (state.gameData.location.kind === "building") {
-    setInteriorMoveTargetFromClick(state.gamePointerDown || null);
+    setInteriorMoveTargetFromClick(canvasPoint);
     return;
   }
+  const imagePoint = clampImagePoint(screenToImage(canvasPoint.x, canvasPoint.y));
   setMoveTargetFromClick(imagePoint);
 }
 
-function setInteriorMoveTargetFromClick(pointer) {
-  if (!pointer) return;
-  const target = screenToInterior(pointer.startX, pointer.startY);
+function setInteriorMoveTargetFromClick(canvasPoint) {
+  if (!canvasPoint) return;
+  const target = screenToInterior(canvasPoint.x, canvasPoint.y);
   setMoveTarget(target);
   state.movementKeys.clear();
   const building = getSelectedBuildingMemory();
@@ -10934,8 +10935,9 @@ function normalizeGameData(source) {
   base.settings.showPeopleMarkers = showAnnotations;
   base.settings.showExplorationGrid = settings.showExplorationGrid === true;
   const location = source.location && typeof source.location === "object" ? source.location : {};
+  const locationKind = location.kind === "building" || location.kind === "room" ? "building" : "campus";
   base.location = {
-    kind: location.kind === "building" || location.kind === "room" ? location.kind : "campus",
+    kind: locationKind,
     buildingId: typeof location.buildingId === "string" ? location.buildingId : "",
     roomId: typeof location.roomId === "string" ? location.roomId : ""
   };
