@@ -21,6 +21,7 @@ const DEFAULT_WALK_SPEED = 320;
 const WALK_SPEED_FACTOR = 0.75;
 const MOVE_SLIDE_SAMPLE_RADIUS = 8;
 const MOVE_SLIDE_MIN_DISTANCE = 0.5;
+const MOVE_APPLY_MIN_DISTANCE = 0.02;
 const MOVE_TARGET_STOP_DISTANCE = 6;
 const MOVE_TARGET_SEARCH_RADIUS = 120;
 const MOVE_TARGET_START_SAMPLE_DISTANCE = 18;
@@ -31,6 +32,9 @@ const MOVE_TARGET_STUCK_SECONDS = 2.4;
 const MOVE_TARGET_PATH_COOLDOWN_SECONDS = 0.55;
 const MOVE_TARGET_WAYPOINT_DISTANCE = 10;
 const MOVE_TARGET_PATH_MAX_NODES = 18000;
+const MOVE_MAX_BLOCKED_GAP = 3;
+const MAP_ALPHA_VISIBILITY_TOLERANCE = 2;
+const NEARBY_CONTEXT_REFRESH_DISTANCE = 18;
 const GAME_CLICK_MOVE_TOLERANCE = 14;
 const PHOTO_SPOT_MERGE_FACTOR = 1;
 const PHOTO_SPOT_INTERACT_RADIUS_FACTOR = 1;
@@ -436,11 +440,14 @@ const state = {
   moveTargetPathCooldownSeconds: 0,
   lastGameFrameTime: 0,
   gameLoopRunning: false,
+  gameLoopFrameId: null,
+  manualStepping: false,
   gameSaveTimer: null,
   activeGameFileTarget: "",
   currentNearbyPhotoSpotId: "",
   currentNearbyInteractionTargets: [],
   currentNearbyBuildingIds: [],
+  nearbyContextLastPoint: null,
   selectedNearbyInteractionKey: "",
   defaultPhotoSpotInteractionKey: "",
   selectedSpotPhotoForEditId: "",
@@ -513,6 +520,9 @@ const state = {
   mapAlphaSampleCanvas: document.createElement("canvas"),
   mapAlphaPixelCache: new Map(),
   mapAlphaMask: null,
+  structureBoundsCache: new WeakMap(),
+  structureSpatialIndexCache: new WeakMap(),
+  movementSampleCache: null,
   interactionPreviewScale: 1,
   interactionFastUntil: 0,
   interactionIdleTimer: null,
@@ -670,9 +680,16 @@ async function init() {
   window.render_game_to_text = renderToText;
   window.advanceTime = async (ms = 16) => {
     const steps = Math.max(1, Math.round(Number(ms || 16) / (1000 / 60)));
+    state.manualStepping = true;
+    if (state.gameLoopFrameId !== null) {
+      cancelAnimationFrame(state.gameLoopFrameId);
+      state.gameLoopFrameId = null;
+    }
+    state.gameLoopRunning = false;
     for (let index = 0; index < steps; index++) {
       updateGameMovement(1 / 60);
     }
+    state.manualStepping = false;
     updateNearbyGameContext();
     followPlayer();
     renderGamePanel();
@@ -2416,10 +2433,10 @@ function followPlayer() {
 }
 
 function startGameLoop() {
-  if (state.gameLoopRunning) return;
+  if (state.manualStepping || state.gameLoopRunning) return;
   state.gameLoopRunning = true;
   state.lastGameFrameTime = performance.now();
-  requestAnimationFrame(gameLoop);
+  state.gameLoopFrameId = requestAnimationFrame(gameLoop);
 }
 
 function clearMoveTarget() {
@@ -2495,18 +2512,28 @@ function updateMoveTargetProgress(dt, previousPoint) {
 
 function gameLoop(now) {
   state.gameLoopRunning = false;
+  state.gameLoopFrameId = null;
   const dt = Math.min(0.05, Math.max(0, (now - (state.lastGameFrameTime || now)) / 1000));
   state.lastGameFrameTime = now;
   if (!state.editorEnabled && state.mapImage) {
     const moved = updateGameMovement(dt);
     if (moved || getMovementVector().x || getMovementVector().y || (state.moveTarget && !state.movementKeys.size)) {
       state.gameLoopRunning = true;
-      requestAnimationFrame(gameLoop);
+      state.gameLoopFrameId = requestAnimationFrame(gameLoop);
     }
   }
 }
 
 function updateGameMovement(dt) {
+  state.movementSampleCache = new Map();
+  try {
+    return updateGameMovementCore(dt);
+  } finally {
+    state.movementSampleCache = null;
+  }
+}
+
+function updateGameMovementCore(dt) {
   const autoMove = state.moveTarget && !state.movementKeys.size;
   if (autoMove) {
     state.moveTargetPathCooldownSeconds = Math.max(0, state.moveTargetPathCooldownSeconds - dt);
@@ -2524,8 +2551,6 @@ function updateGameMovement(dt) {
     updateMoveTargetStuckWatch(dt);
     if (state.moveTargetStuckSeconds >= MOVE_TARGET_STUCK_SECONDS) {
       clearMoveTarget();
-    } else {
-      startGameLoop();
     }
     queueDraw();
     return false;
@@ -2536,30 +2561,40 @@ function updateGameMovement(dt) {
   const speed = (Number(player.walkSpeed) || DEFAULT_WALK_SPEED) * WALK_SPEED_FACTOR;
   let next = resolvePlayerMove(player, vector, speed * dt);
   if (!next && state.moveTarget && !state.movementKeys.size) {
-    next = resolveMoveTargetRecovery(player, vector, speed * dt);
+    next = resolveMoveTargetStep(player, speed * dt);
   }
-  if (next && distance(player, next) < MOVE_SLIDE_MIN_DISTANCE) next = null;
+  if (next && distance(player, next) < MOVE_APPLY_MIN_DISTANCE) next = null;
   if (!next) {
     if (state.moveTarget && !state.movementKeys.size) {
       if (hasActiveMoveTargetPath()) {
         clearMoveTargetPath();
         state.moveTargetRepathSeconds = 0;
         state.moveTargetPathCooldownSeconds = 0;
-        startGameLoop();
         queueDraw();
         return false;
       }
       updateMoveTargetStuckWatch(dt);
       state.moveTargetRepathSeconds += dt;
+      if (state.moveTargetStuckSeconds >= 0.35) {
+        const recovery = resolveMoveTargetStep(player, Math.max(speed * dt, MOVE_SLIDE_MIN_DISTANCE * 8));
+        if (recovery) {
+          player.x = recovery.x;
+          player.y = recovery.y;
+          resetMoveTargetStuckWatch();
+          state.moveTargetRepathSeconds = 0;
+          const contextChanged = updateNearbyGameContextIfNeeded({ force: true });
+          followPlayer();
+          if (contextChanged) renderGamePanel();
+          queueDraw();
+          return true;
+        }
+      }
       if (state.moveTargetRepathSeconds >= MOVE_TARGET_REPATH_SECONDS && tryBuildMoveTargetPath(player)) {
-        startGameLoop();
         queueDraw();
         return false;
       }
       if (state.moveTargetStuckSeconds >= MOVE_TARGET_STUCK_SECONDS) {
         clearMoveTarget();
-      } else {
-        startGameLoop();
       }
       queueDraw();
     }
@@ -2568,8 +2603,10 @@ function updateGameMovement(dt) {
   markMapInteraction(90);
   player.x = next.x;
   player.y = next.y;
+  let targetReached = false;
   if (state.moveTarget && !state.movementKeys.size && distance(player, state.moveTarget) <= MOVE_TARGET_STOP_DISTANCE) {
     clearMoveTarget();
+    targetReached = true;
   } else if (state.moveTarget && !state.movementKeys.size) {
     updateMoveTargetStuckWatch(dt);
     updateMoveTargetProgress(dt, previousPoint);
@@ -2578,12 +2615,15 @@ function updateGameMovement(dt) {
     }
     if (state.moveTarget && state.moveTargetStuckSeconds >= MOVE_TARGET_STUCK_SECONDS) {
       clearMoveTarget();
+      targetReached = true;
     }
   }
-  updateNearbyGameContext();
+  const contextChanged = updateNearbyGameContextIfNeeded({ force: targetReached });
   followPlayer();
-  markGameDirty({ defer: true, keepExplorationCache: true });
-  renderGamePanel();
+  if (targetReached) {
+    markGameDirty({ defer: true, keepExplorationCache: true });
+  }
+  if (contextChanged || targetReached) renderGamePanel();
   queueDraw();
   return true;
 }
@@ -2634,6 +2674,66 @@ function resolveMoveTargetRecovery(origin, direction, distanceValue) {
     const moved = distance(origin, move);
     const progress = candidateDirection.x * direction.x + candidateDirection.y * direction.y;
     const score = progress * 4 + moved;
+    if (score > bestScore) {
+      best = move;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function resolveMoveTargetStep(origin, distanceValue) {
+  const target = getActiveMoveTargetPoint();
+  if (!target || !distanceValue) return null;
+  const primary = normalizeVector({ x: target.x - origin.x, y: target.y - origin.y });
+  if (!primary) return null;
+  const direct = resolvePlayerMove(origin, primary, distanceValue);
+  if (direct) return direct;
+  const fanMove = findBestFanMoveToward(origin, primary, target, distanceValue);
+  if (fanMove) return fanMove;
+  return resolveMoveTargetRecovery(origin, primary, distanceValue);
+}
+
+function findBestFanMoveToward(origin, primary, target, distanceValue) {
+  const probeDistance = Math.max(distanceValue * 2.6, getPlayerCollisionRadius(origin) * 1.35, 18);
+  const baseAngle = Math.atan2(primary.y, primary.x);
+  const offsets = [
+    0,
+    Math.PI / 18,
+    -Math.PI / 18,
+    Math.PI / 12,
+    -Math.PI / 12,
+    Math.PI / 8,
+    -Math.PI / 8,
+    Math.PI / 6,
+    -Math.PI / 6,
+    Math.PI / 4,
+    -Math.PI / 4,
+    Math.PI / 3,
+    -Math.PI / 3,
+    Math.PI / 2,
+    -Math.PI / 2,
+    (Math.PI * 2) / 3,
+    -(Math.PI * 2) / 3
+  ];
+  const currentTargetDistance = distance(origin, target);
+  let best = null;
+  let bestScore = -Infinity;
+  for (const offset of offsets) {
+    const direction = {
+      x: Math.cos(baseAngle + offset),
+      y: Math.sin(baseAngle + offset)
+    };
+    const move = findFarthestWalkableMove(origin, {
+      x: direction.x * probeDistance,
+      y: direction.y * probeDistance
+    });
+    if (!move) continue;
+    const moved = distance(origin, move);
+    if (moved < MOVE_SLIDE_MIN_DISTANCE) continue;
+    const targetGain = currentTargetDistance - distance(move, target);
+    const alignment = direction.x * primary.x + direction.y * primary.y;
+    const score = targetGain * 8 + alignment * 2 + moved * 0.35 - Math.abs(offset) * 0.45;
     if (score > bestScore) {
       best = move;
       bestScore = score;
@@ -2937,6 +3037,8 @@ function findFarthestWalkableMove(origin, delta) {
   if (Math.hypot(delta.x, delta.y) < MOVE_SLIDE_MIN_DISTANCE) return null;
   const originWalkable = canPlayerMoveTo(origin);
   const originTouchesPriorityPath = isPlayerCircleTouchingPriorityPath(origin);
+  const bridged = findFarthestWalkableMoveWithGap(origin, delta);
+  if (bridged) return bridged;
   let low = 0;
   let high = 1;
   let best = null;
@@ -2956,6 +3058,30 @@ function findFarthestWalkableMove(origin, delta) {
   if (!best && (!originWalkable || originTouchesPriorityPath)) {
     const escape = findFirstWalkableMove(origin, delta);
     if (escape) return escape;
+  }
+  return best && distance(origin, best) >= MOVE_SLIDE_MIN_DISTANCE ? best : null;
+}
+
+function findFarthestWalkableMoveWithGap(origin, delta) {
+  const length = Math.hypot(delta.x, delta.y);
+  if (length < MOVE_SLIDE_MIN_DISTANCE) return null;
+  const step = Math.max(1, Math.min(3, getPlayerCollisionRadius(origin) * 0.22));
+  const steps = Math.max(2, Math.ceil(length / step));
+  let best = null;
+  let blockedDistance = 0;
+  for (let index = 1; index <= steps; index++) {
+    const t = index / steps;
+    const point = clampMoveTarget(origin, {
+      x: delta.x * t,
+      y: delta.y * t
+    });
+    if (canPlayerMoveTo(point)) {
+      best = point;
+      blockedDistance = 0;
+      continue;
+    }
+    blockedDistance += length / steps;
+    if (blockedDistance > MOVE_MAX_BLOCKED_GAP) break;
   }
   return best && distance(origin, best) >= MOVE_SLIDE_MIN_DISTANCE ? best : null;
 }
@@ -3019,6 +3145,18 @@ function handleGameKeyUp(event) {
 }
 
 function canPlayerMoveTo(point) {
+  const cache = state.movementSampleCache;
+  if (cache) {
+    const key = `${Math.round(point.x * 4) / 4},${Math.round(point.y * 4) / 4}`;
+    if (cache.has(key)) return cache.get(key);
+    const value = canPlayerMoveToUncached(point);
+    cache.set(key, value);
+    return value;
+  }
+  return canPlayerMoveToUncached(point);
+}
+
+function canPlayerMoveToUncached(point) {
   const touchesPriorityPath = isPlayerCircleTouchingPriorityPath(point);
   if (!isPointOnVisibleMap(point)) return false;
   const sample = samplePlayerCollisionAt(point);
@@ -3049,7 +3187,21 @@ function isPointOnVisibleMap(point) {
   if (point.x < 0 || point.y < 0 || point.x >= state.mapNaturalSize.width || point.y >= state.mapNaturalSize.height) return false;
   const editData = getSelectedEditData();
   if (editData.cropPolygon?.length >= 3 && !pointInPolygon(point, editData.cropPolygon)) return false;
-  return !isTransparentMapPixel(point);
+  if (!isTransparentMapPixel(point)) return true;
+  return hasNearbyVisibleMapPixel(point, MAP_ALPHA_VISIBILITY_TOLERANCE);
+}
+
+function hasNearbyVisibleMapPixel(point, radius) {
+  if (!radius) return false;
+  for (let y = -radius; y <= radius; y += 1) {
+    for (let x = -radius; x <= radius; x += 1) {
+      if (!x && !y) continue;
+      const sample = { x: point.x + x, y: point.y + y };
+      if (sample.x < 0 || sample.y < 0 || sample.x >= state.mapNaturalSize.width || sample.y >= state.mapNaturalSize.height) continue;
+      if (!isTransparentMapPixel(sample)) return true;
+    }
+  }
+  return false;
 }
 
 function samplePlayerCollisionAt(point) {
@@ -3058,6 +3210,7 @@ function samplePlayerCollisionAt(point) {
     return { ...sample, walkable: true, top: sample.priorityHit || sample.walkableHit || sample.top };
   }
   if (sample.walkable === false) return sample;
+  if (!hasNearbyBlockingStructure(point)) return sample;
   const blocker = findNearestBlockingStructure(point);
   if (!blocker) return sample;
   return {
@@ -3080,22 +3233,23 @@ function isPlayerCircleTouchingPriorityPath(point) {
 
 function isPlayerCircleTouchingWalkableStructure(point, options = {}) {
   const radius = Number.isFinite(Number(options.radius)) ? Math.max(1, Number(options.radius)) : getPlayerCollisionRadius(point);
-  const editData = getSelectedEditData();
   const visibleObjects = getVisibleStructureObjectIds();
-  for (const region of editData.structureRegions || []) {
+  for (const region of getStructureRegionCandidatesNear(point, radius)) {
     if (region.visible === false) continue;
     const type = region.type || "custom";
     const walkable = getStructureTypeWalkable(type, region.walkable);
     if (!walkable) continue;
     if (options.priorityOnly && !isPriorityPathType(type)) continue;
+    if (!isPointNearStructureRegionBounds(point, region, radius)) continue;
     if (distanceToRegion(point, getRegionAreas(region), region) <= radius) return true;
   }
-  for (const stroke of editData.judgementStrokes || []) {
+  for (const stroke of getJudgementStrokeCandidatesNear(point, radius)) {
     const type = stroke.type || "custom";
     const walkable = getStructureTypeWalkable(type, stroke.walkable);
     if (!walkable) continue;
     if (options.priorityOnly && !isPriorityPathType(type)) continue;
     if (!stroke.objectId || !visibleObjects.has(stroke.objectId)) continue;
+    if (!isPointNearJudgementStrokeBounds(point, stroke, radius)) continue;
     if (distanceToStroke(point, stroke) <= radius) return true;
   }
   return false;
@@ -3391,6 +3545,7 @@ function clearMapRenderCache() {
   state.mapAlphaSampleCanvas.height = 1;
   state.mapAlphaPixelCache.clear();
   state.mapAlphaMask = null;
+  clearStructureBoundsCache();
   state.interactionPreviewScale = 1;
   state.mapRenderWarm = false;
   clearExplorationCache();
@@ -3406,7 +3561,13 @@ function clearStructureLayerCache() {
 
 function markStructureLayerDirty() {
   state.structureLayerDirty = true;
+  clearStructureBoundsCache();
   clearExplorationCache();
+}
+
+function clearStructureBoundsCache() {
+  state.structureBoundsCache = new WeakMap();
+  state.structureSpatialIndexCache = new WeakMap();
 }
 
 function markGameDirty(options = {}) {
@@ -3432,7 +3593,24 @@ async function saveCurrentGameData() {
   await putGameData(school.id, state.gameData);
 }
 
+function updateNearbyGameContextIfNeeded(options = {}) {
+  if (options.force || shouldRefreshNearbyGameContext()) {
+    const changed = updateNearbyGameContext();
+    state.nearbyContextLastPoint = { x: state.gameData.player.x, y: state.gameData.player.y };
+    return changed;
+  }
+  return false;
+}
+
+function shouldRefreshNearbyGameContext() {
+  if (state.gameData.location.kind === "building") return true;
+  const player = state.gameData.player;
+  if (!state.nearbyContextLastPoint) return true;
+  return distance(player, state.nearbyContextLastPoint) >= NEARBY_CONTEXT_REFRESH_DISTANCE;
+}
+
 function updateNearbyGameContext() {
+  const previousKey = getNearbyContextKey();
   if (state.gameData.location.kind === "building") {
     clearMoveTarget();
     const buildingId = state.gameData.location.buildingId || state.gameData.selectedBuildingId || "";
@@ -3447,7 +3625,7 @@ function updateNearbyGameContext() {
     state.selectedBuildingPhotoForEditId = "";
     state.gameData.selectedBuildingId = buildingId;
     if (buildingId) getOrCreateBuildingMemory(buildingId);
-    return;
+    return previousKey !== getNearbyContextKey();
   }
   const player = state.gameData.player;
   const photoTarget = getNearbyPhotoSpotTarget(player);
@@ -3493,6 +3671,20 @@ function updateNearbyGameContext() {
     }
   }
   if (selected?.kind === "structure") getOrCreateBuildingMemory(selected.id);
+  return previousKey !== getNearbyContextKey();
+}
+
+function getNearbyContextKey() {
+  return [
+    state.gameData.location.kind,
+    state.gameData.location.buildingId || "",
+    state.currentNearbyPhotoSpotId || "",
+    state.currentNearbyInteractionTargets.map((item) => item.key).join(","),
+    state.currentNearbyBuildingIds.join(","),
+    state.selectedNearbyInteractionKey || "",
+    state.gameData.selectedPhotoSpotId || "",
+    state.gameData.selectedBuildingId || ""
+  ].join("|");
 }
 
 function getActivePhotoSpot() {
@@ -3601,27 +3793,26 @@ function getPhotoSpotDateValue(spot) {
 }
 
 function getNearbyStructureTargets(point) {
-  const editData = getSelectedEditData();
-  return (editData.structureRegions || [])
-    .filter((region) => region.visible !== false)
-    .filter((region) => isInteractiveStructureType(region?.type || "custom"))
-    .map((region) => {
-      const areas = getRegionAreas(region);
-      const bounds = getRegionLabelBounds(areas);
-      const distance = bounds ? distanceToBounds(point, bounds) : Infinity;
-      const preciseDistance = bounds ? distanceToRegion(point, areas, region) : Infinity;
-      return bounds ? {
-        id: region.id,
-        region,
-        bounds,
-        distance: preciseDistance,
-        label: getStructureInteractionLabel(region),
-        kind: "structure",
-        key: `structure:${region.id}`
-      } : null;
-    })
-    .filter((item) => item && item.distance <= getInteractionRadiusForStructure(item.region))
-    .sort((a, b) => a.distance - b.distance);
+  const targets = [];
+  for (const region of getStructureRegionCandidatesNear(point, 128)) {
+    if (region.visible === false || !isInteractiveStructureType(region?.type || "custom")) continue;
+    const radius = getInteractionRadiusForStructure(region);
+    const bounds = getStructureRegionBounds(region);
+    if (!bounds || distanceToBounds(point, bounds) > radius) continue;
+    const areas = getRegionAreas(region);
+    const preciseDistance = distanceToRegion(point, areas, region);
+    if (preciseDistance > radius) continue;
+    targets.push({
+      id: region.id,
+      region,
+      bounds,
+      distance: preciseDistance,
+      label: getStructureInteractionLabel(region),
+      kind: "structure",
+      key: `structure:${region.id}`
+    });
+  }
+  return targets.sort((a, b) => a.distance - b.distance);
 }
 
 function getNearbyPhotoSpotTargets(point) {
@@ -3896,6 +4087,129 @@ function getMapMarkerThumbnailSize(image, options = {}) {
   return {
     width: Math.max(48, Math.round(naturalWidth * scale)),
     height: Math.max(36, Math.round(naturalHeight * scale))
+  };
+}
+
+function hasNearbyBlockingStructure(point) {
+  const radius = getPlayerCollisionRadius(point);
+  const visibleObjects = getVisibleStructureObjectIds();
+  for (const region of getStructureRegionCandidatesNear(point, radius)) {
+    if (region.visible === false || getStructureTypeWalkable(region.type, region.walkable)) continue;
+    const bounds = getStructureRegionBounds(region);
+    if (bounds && distanceToBounds(point, bounds) <= radius) return true;
+  }
+  for (const stroke of getJudgementStrokeCandidatesNear(point, radius)) {
+    if (!stroke.objectId || !visibleObjects.has(stroke.objectId)) continue;
+    if (getStructureTypeWalkable(stroke.type, stroke.walkable)) continue;
+    const bounds = getJudgementStrokeBounds(stroke);
+    if (bounds && distanceToBounds(point, bounds) <= radius) return true;
+  }
+  return false;
+}
+
+function getStructureRegionCandidatesNear(point, radius = 0) {
+  return getStructureSpatialCandidates("regions", point, radius);
+}
+
+function getJudgementStrokeCandidatesNear(point, radius = 0) {
+  return getStructureSpatialCandidates("strokes", point, radius);
+}
+
+function getStructureSpatialCandidates(kind, point, radius = 0) {
+  const editData = getSelectedEditData();
+  const index = getStructureSpatialIndex(editData);
+  const cellSize = index.cellSize;
+  const minCol = Math.floor((point.x - radius) / cellSize);
+  const maxCol = Math.floor((point.x + radius) / cellSize);
+  const minRow = Math.floor((point.y - radius) / cellSize);
+  const maxRow = Math.floor((point.y + radius) / cellSize);
+  const seen = new Set();
+  const items = [];
+  for (let row = minRow; row <= maxRow; row++) {
+    for (let col = minCol; col <= maxCol; col++) {
+      const bucket = index.cells.get(`${col},${row}`);
+      if (!bucket) continue;
+      for (const item of bucket[kind]) {
+        const id = item.id || item.objectId || `${kind}:${items.length}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        items.push(item);
+      }
+    }
+  }
+  return items;
+}
+
+function getStructureSpatialIndex(editData = getSelectedEditData()) {
+  if (state.structureSpatialIndexCache.has(editData)) {
+    return state.structureSpatialIndexCache.get(editData);
+  }
+  const cellSize = Math.max(96, DEFAULT_PLAYER_RADIUS * 6);
+  const cells = new Map();
+  const addItem = (kind, item, bounds) => {
+    if (!bounds) return;
+    const minCol = Math.floor(bounds.left / cellSize);
+    const maxCol = Math.floor(bounds.right / cellSize);
+    const minRow = Math.floor(bounds.top / cellSize);
+    const maxRow = Math.floor(bounds.bottom / cellSize);
+    for (let row = minRow; row <= maxRow; row++) {
+      for (let col = minCol; col <= maxCol; col++) {
+        const key = `${col},${row}`;
+        let bucket = cells.get(key);
+        if (!bucket) {
+          bucket = { regions: [], strokes: [] };
+          cells.set(key, bucket);
+        }
+        bucket[kind].push(item);
+      }
+    }
+  };
+  for (const region of editData.structureRegions || []) {
+    addItem("regions", region, getStructureRegionBounds(region));
+  }
+  for (const stroke of editData.judgementStrokes || []) {
+    addItem("strokes", stroke, getJudgementStrokeBounds(stroke));
+  }
+  const index = { cellSize, cells };
+  state.structureSpatialIndexCache.set(editData, index);
+  return index;
+}
+
+function getStructureRegionBounds(region) {
+  if (region && state.structureBoundsCache.has(region)) {
+    return state.structureBoundsCache.get(region);
+  }
+  const areas = getRegionAreas(region);
+  let bounds = null;
+  for (const area of areas) {
+    bounds = mergeBounds(bounds, getAreaBounds(area));
+  }
+  const result = bounds || getRegionLabelBounds(areas);
+  if (region) state.structureBoundsCache.set(region, result);
+  return result;
+}
+
+function getJudgementStrokeBounds(stroke) {
+  const points = stroke?.points || [];
+  const bounds = polygonBounds(points);
+  if (!bounds) return null;
+  const padding = Math.max(1, (Number(stroke.size) || STRUCTURE_BRUSH_SIZE) / 2);
+  return {
+    left: bounds.left - padding,
+    top: bounds.top - padding,
+    right: bounds.right + padding,
+    bottom: bounds.bottom + padding
+  };
+}
+
+function mergeBounds(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return {
+    left: Math.min(a.left, b.left),
+    top: Math.min(a.top, b.top),
+    right: Math.max(a.right, b.right),
+    bottom: Math.max(a.bottom, b.bottom)
   };
 }
 
@@ -7731,6 +8045,7 @@ function undoStructureStep() {
 }
 
 function polygonBounds(points) {
+  if (!points?.length) return null;
   return points.reduce(
     (bounds, point) => ({
       left: Math.min(bounds.left, point.x),
@@ -8025,8 +8340,11 @@ function sampleStructureAt(point, options = {}) {
   const includeHidden = Boolean(options.includeHidden);
   const visibleObjects = getVisibleStructureObjectIds();
   const hits = [];
-  for (const region of editData.structureRegions) {
+  const regions = includeHidden ? editData.structureRegions : getStructureRegionCandidatesNear(point);
+  const strokes = includeHidden ? editData.judgementStrokes : getJudgementStrokeCandidatesNear(point);
+  for (const region of regions) {
     if (!includeHidden && region.visible === false) continue;
+    if (!includeHidden && !isPointNearStructureRegionBounds(point, region)) continue;
     if (!isPointInRegion(point, region)) continue;
     hits.push({
       id: region.id,
@@ -8037,9 +8355,10 @@ function sampleStructureAt(point, options = {}) {
       walkRank: getStructureWalkRank(region.type)
     });
   }
-  for (const stroke of editData.judgementStrokes) {
+  for (const stroke of strokes) {
     if (!includeHidden && !stroke.objectId) continue;
     if (!includeHidden && stroke.objectId && !visibleObjects.has(stroke.objectId)) continue;
+    if (!includeHidden && !isPointNearJudgementStrokeBounds(point, stroke)) continue;
     if (!isPointInStroke(point, stroke)) continue;
     hits.push({
       id: stroke.objectId || stroke.id,
@@ -8061,6 +8380,16 @@ function sampleStructureAt(point, options = {}) {
     priorityHit,
     hits
   };
+}
+
+function isPointNearStructureRegionBounds(point, region, padding = 0) {
+  const bounds = getStructureRegionBounds(region);
+  return Boolean(bounds && point.x >= bounds.left - padding && point.x <= bounds.right + padding && point.y >= bounds.top - padding && point.y <= bounds.bottom + padding);
+}
+
+function isPointNearJudgementStrokeBounds(point, stroke, padding = 0) {
+  const bounds = getJudgementStrokeBounds(stroke);
+  return Boolean(bounds && point.x >= bounds.left - padding && point.x <= bounds.right + padding && point.y >= bounds.top - padding && point.y <= bounds.bottom + padding);
 }
 
 function isPointInStroke(point, stroke) {
