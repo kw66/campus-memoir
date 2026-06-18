@@ -636,7 +636,8 @@ button:disabled {
   display: flex;
 }
 
-.spot-fields {
+.spot-fields,
+.building-fields {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(118px, 0.75fr);
   gap: 8px;
@@ -742,6 +743,21 @@ button:disabled {
   font-weight: 900;
 }
 
+.photo-tile-date {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(31, 85, 78, 0.82);
+  color: #fffaf0;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .list-empty {
   min-width: 100%;
   min-height: 220px;
@@ -801,9 +817,8 @@ button:disabled {
   order: 0;
 }
 
-.game-actions.photo-actions [data-game-action="linkPhotoSpotEntrance"] {
-  grid-column: 1 / -1;
-  order: 6;
+.game-actions.entrance-actions {
+  grid-template-columns: 1fr;
 }
 
 .game-actions .secondary-button,
@@ -2048,7 +2063,8 @@ textarea.game-input {
     max-height: none;
   }
 
-  .spot-fields {
+  .spot-fields,
+  .building-fields {
     grid-template-columns: 1fr;
   }
 

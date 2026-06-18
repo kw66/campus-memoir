@@ -3822,6 +3822,23 @@ function getSpotPanelDateValue(spot) {
     : getPhotoSpotDateValue(spot);
 }
 
+function getSelectedBuildingPhotoForEdit(building) {
+  const selectedId = getSelectedBuildingPhotoForEditId(building);
+  return selectedId ? building.photos.find((photo) => photo.id === selectedId) || null : null;
+}
+
+function getBuildingPanelDateValue(building) {
+  const selectedPhoto = getSelectedBuildingPhotoForEdit(building);
+  return selectedPhoto
+    ? getIsoDateInputValue(selectedPhoto.capturedAt || selectedPhoto.createdAt || "")
+    : getIsoDateInputValue(building?.capturedAt || building?.createdAt || "");
+}
+
+function getPhotoDateLabel(photo) {
+  const value = getIsoDateInputValue(photo?.capturedAt || photo?.createdAt || "");
+  return value ? value.replaceAll("-", ".") : "";
+}
+
 function getIsoDateInputValue(raw) {
   if (!raw) return "";
   const datePrefix = String(raw).match(/^(\d{4}-\d{2}-\d{2})/);
@@ -4926,7 +4943,8 @@ function renderBuildingPhotoListHtml(building) {
   return renderPhotoTileListHtml(building?.photos || [], {
     activeId,
     selectedId,
-    action: "selectBuildingPhoto"
+    action: "selectBuildingPhoto",
+    showDate: true
   });
 }
 
@@ -4936,10 +4954,12 @@ function renderPhotoTileListHtml(photos, options) {
     const active = photo.id === options.activeId;
     const selected = photo.id === options.selectedId;
     const style = getPhotoTileStyle(photo);
+    const dateLabel = options.showDate ? getPhotoDateLabel(photo) : "";
     return `
       <button class="photo-tile${active ? " active" : ""}${selected ? " selected" : ""}" type="button" data-game-action="${escapeAttr(options.action)}" data-photo-id="${escapeAttr(photo.id)}" data-photo-index="${index}"${style ? ` style="${style}"` : ""}>
         ${url ? `<img src="${url}" alt="">` : `<span>照片</span>`}
         <span class="photo-tile-index">${index + 1}</span>
+        ${dateLabel ? `<span class="photo-tile-date">${escapeHtml(dateLabel)}</span>` : ""}
       </button>
     `;
   }).join("");
@@ -4994,18 +5014,24 @@ function renderCampusInteractionHtml(region, building) {
   const moveForwardDisabled = editIndex < 0 || editIndex >= building.photos.length - 1;
   return `
     <section class="game-card campus-card">
-      <div class="game-card-head"><strong>${escapeHtml(getStructureInteractionLabel(region))}</strong><span>${escapeHtml(TYPE_STYLES[region?.type || "custom"]?.label || "对象")}</span></div>
       <div class="building-editor" ${hasBuilding ? "" : "hidden"}>
-        <input class="game-input" data-game-field="buildingName" type="text" value="${escapeAttr(building?.customName || region?.name || "")}" placeholder="建筑名称">
+        <div class="building-fields">
+          <input class="game-input" data-game-field="buildingName" type="text" value="${escapeAttr(building?.customName || region?.name || "")}" placeholder="建筑名称">
+          <input class="game-input" data-game-field="buildingPhotoDate" type="date" value="${escapeAttr(getBuildingPanelDateValue(building))}">
+        </div>
+        ${showEntranceTools ? `
+          <div class="game-actions entrance-actions">
+            <button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>
+          </div>
+          <div class="entrance-list">${renderEntranceListHtml(region, building)}</div>
+        ` : ""}
         <div class="game-actions dense photo-actions">
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
           <button class="secondary-button" type="button" data-game-action="captureBuildingPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
           <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteBuildingPhoto" ${!editSelectedId ? "disabled" : ""}>删图</button>
-          ${showEntranceTools ? `<button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>` : ""}
         </div>
-        ${showEntranceTools ? `<div class="entrance-list">${renderEntranceListHtml(region, building)}</div>` : ""}
         <div class="photo-list building-photo-list" data-photo-list="building">
           ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
         </div>
@@ -5161,6 +5187,8 @@ function onGamePanelInput(event) {
   const name = field.dataset.gameField;
   if (name === "buildingName") {
     saveSelectedBuildingMeta({ defer: true, silent: true });
+  } else if (name === "buildingPhotoDate") {
+    saveSelectedBuildingMeta({ defer: true, silent: true, refresh: true });
   } else if (name === "photoSpotName" || name === "photoSpotDate") {
     saveActivePhotoSpotMeta({ defer: true, silent: true });
   } else if (name === "roomName") {
@@ -5732,7 +5760,7 @@ function saveActivePhotoSpotMeta(options = {}) {
   spot.updatedAt = new Date().toISOString();
   markGameDirty(options.defer ? { defer: true } : {});
   if (!options.silent) setGameNotice("拍照点已保存");
-  if (!options.silent) renderGamePanel({ force: true });
+  if (!options.silent || options.refresh) renderGamePanel({ force: true });
   queueDraw();
 }
 
@@ -5792,14 +5820,22 @@ function saveSelectedBuildingMeta(options = {}) {
   const region = getStructureRegionById(state.gameData.selectedBuildingId);
   if (!building || !region) return;
   const nameInput = els.gamePanel.querySelector('[data-game-field="buildingName"]');
+  const dateInput = els.gamePanel.querySelector('[data-game-field="buildingPhotoDate"]');
   const name = nameInput?.value?.trim() || "";
   building.customName = name;
   region.name = name || region.name || "";
+  const dateValue = dateInput?.value || "";
+  const selectedPhoto = getSelectedBuildingPhotoForEdit(building);
+  if (selectedPhoto) {
+    selectedPhoto.capturedAt = dateInputValueToIso(dateValue, selectedPhoto.capturedAt || selectedPhoto.createdAt || "");
+  } else {
+    building.capturedAt = dateInputValueToIso(dateValue, building.capturedAt || building.createdAt || "");
+  }
   building.updatedAt = new Date().toISOString();
   commitStructureDataChange();
   markGameDirty(options.defer ? { defer: true } : {});
   if (!options.silent) setGameNotice("建筑已保存");
-  if (!options.silent) renderGamePanel({ force: true });
+  if (!options.silent || options.refresh) renderGamePanel({ force: true });
   queueDraw();
 }
 
@@ -10659,6 +10695,7 @@ function normalizeGameBuilding(source, fallbackId) {
     mapPhotoLimit: DEFAULT_BUILDING_MAP_PHOTO_LIMIT,
     entrances: [],
     rooms: [],
+    capturedAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -10671,6 +10708,7 @@ function normalizeGameBuilding(source, fallbackId) {
     mapPhotoLimit: Number.isFinite(Number(source.mapPhotoLimit)) ? clamp(Math.floor(Number(source.mapPhotoLimit)), 1, 12) : DEFAULT_BUILDING_MAP_PHOTO_LIMIT,
     entrances: Array.isArray(source.entrances) ? source.entrances.map(normalizeEntrance).filter(Boolean) : [],
     rooms: Array.isArray(source.rooms) ? source.rooms.map(normalizeRoom).filter(Boolean) : [],
+    capturedAt: typeof source.capturedAt === "string" ? source.capturedAt : (typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString()),
     createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString(),
     updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : new Date().toISOString()
   };
