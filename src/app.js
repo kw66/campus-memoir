@@ -4042,7 +4042,7 @@ function getInteriorRoomCardLayout() {
   const availableWidth = Math.max(1, state.canvasSize.width - margin * 2 - 44);
   const cols = Math.max(1, Math.min(2, Math.floor((state.canvasSize.width - margin * 2) / 360)));
   const cardW = Math.max(260, (availableWidth - (cols - 1) * INTERIOR_ROOM_CARD_GAP) / cols);
-  const cardH = 224;
+  const cardH = 248;
   return {
     margin,
     cols,
@@ -4072,6 +4072,71 @@ function getInteriorRoomPhotoEntries(room, limit = 6) {
     }).filter(Boolean)
   ];
   return entries.slice(0, limit);
+}
+
+function drawInteriorRoomGallery(ctx, entries, x, y, width, height, options = {}) {
+  if (!entries.length || width <= 0 || height <= 0) return;
+  const selected = Boolean(options.selected);
+  const gap = 8;
+  const photos = entries.slice(0, 4).map((entry) => ({
+    ...entry,
+    image: getCachedPhotoImage(entry.photo)
+  }));
+  const ratios = photos.map((entry) => getPhotoImageRatio(entry.image, 4 / 3));
+  if (photos.length > 2 && ratios[0] < 0.8) ratios[0] = Math.max(ratios[0], 0.82);
+  const singleRowHeight = getPhotoRowHeight(ratios, width, gap, height);
+  if (singleRowHeight >= 70 || photos.length <= 2) {
+    drawInteriorPhotoRow(ctx, photos, ratios, x, y + (height - singleRowHeight) / 2, width, singleRowHeight, gap, selected);
+    return;
+  }
+  const topCount = photos.length === 3 ? 1 : 2;
+  const topPhotos = photos.slice(0, topCount);
+  const bottomPhotos = photos.slice(topCount);
+  const topRatios = ratios.slice(0, topCount);
+  const bottomRatios = ratios.slice(topCount);
+  const topHeight = getPhotoRowHeight(topRatios, width, gap, (height - gap) * 0.54);
+  const bottomHeight = getPhotoRowHeight(bottomRatios, width, gap, height - gap - topHeight);
+  const totalHeight = topHeight + gap + bottomHeight;
+  const startY = y + Math.max(0, (height - totalHeight) / 2);
+  drawInteriorPhotoRow(ctx, topPhotos, topRatios, x, startY, width, topHeight, gap, selected);
+  drawInteriorPhotoRow(ctx, bottomPhotos, bottomRatios, x, startY + topHeight + gap, width, bottomHeight, gap, selected);
+}
+
+function getPhotoRowHeight(ratios, width, gap, maxHeight) {
+  const ratioSum = ratios.reduce((sum, ratio) => sum + Math.max(0.2, ratio), 0);
+  const availableWidth = Math.max(1, width - gap * Math.max(0, ratios.length - 1));
+  return Math.max(1, Math.min(maxHeight, availableWidth / Math.max(0.2, ratioSum)));
+}
+
+function drawInteriorPhotoRow(ctx, photos, ratios, x, y, width, height, gap, selected) {
+  const rowWidth = ratios.reduce((sum, ratio) => sum + ratio * height, 0) + gap * Math.max(0, photos.length - 1);
+  let cursorX = x + Math.max(0, (width - rowWidth) / 2);
+  photos.forEach((entry, index) => {
+    const tileWidth = Math.max(1, ratios[index] * height);
+    drawInteriorRoomPhotoTile(ctx, entry, cursorX, y, tileWidth, height, { selected, radius: 7 });
+    cursorX += tileWidth + gap;
+  });
+}
+
+function drawInteriorRoomPhotoTile(ctx, entry, x, y, width, height, options = {}) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, options.radius || 6);
+  ctx.clip();
+  ctx.fillStyle = "rgba(242, 234, 220, 0.96)";
+  ctx.fillRect(x, y, width, height);
+  const inset = Math.min(5, Math.max(2, Math.min(width, height) * 0.04));
+  drawContainImage(ctx, entry.image, x + inset, y + inset, Math.max(1, width - inset * 2), Math.max(1, height - inset * 2));
+  ctx.restore();
+  ctx.strokeStyle = options.selected ? "rgba(31, 85, 78, 0.58)" : "rgba(29, 42, 36, 0.18)";
+  ctx.lineWidth = options.selected ? 1.5 : 1;
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, options.radius || 6);
+  ctx.stroke();
+}
+
+function getPhotoImageRatio(image, fallback = 1) {
+  return isPhotoImageReady(image) ? image.naturalWidth / image.naturalHeight : fallback;
 }
 
 function clearExplorationCache() {
@@ -9055,15 +9120,6 @@ function drawInteriorScene(ctx) {
     ctx.fill();
     ctx.stroke();
     const entries = getInteriorRoomPhotoEntries(room, 6);
-    const gallery = getMapMarkerGalleryLayout(entries, {
-      hero: true,
-      heroMaxWidth: Math.min(300, layout.cardW - 28),
-      heroMaxHeight: 136,
-      restMaxWidth: 78,
-      restMaxHeight: 58,
-      restColumns: 3,
-      gap: 5
-    });
     const thumbW = layout.cardW - 24;
     const thumbH = layout.cardH - 58;
     const thumbX = x + 12;
@@ -9075,7 +9131,7 @@ function drawInteriorScene(ctx) {
     ctx.fillStyle = "#f2eadc";
     ctx.fillRect(thumbX, thumbY, thumbW, thumbH);
     ctx.restore();
-    if (gallery.width) drawMapMarkerGallery(ctx, gallery, thumbX + thumbW / 2, thumbY + (thumbH - gallery.height) / 2, { selected: active, showLabels: false });
+    drawInteriorRoomGallery(ctx, entries, thumbX + 8, thumbY + 8, thumbW - 16, thumbH - 16, { selected: active });
     ctx.strokeStyle = active ? "rgba(31, 85, 78, 0.32)" : "rgba(29, 42, 36, 0.16)";
     ctx.beginPath();
     ctx.roundRect(thumbX, thumbY, thumbW, thumbH, 7);
