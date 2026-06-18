@@ -1160,6 +1160,7 @@ function bindEvents() {
   els.gamePanel.addEventListener("click", onGamePanelClick);
   els.gamePanel.addEventListener("input", onGamePanelInput);
   els.gamePanel.addEventListener("change", onGamePanelChange);
+  els.gamePanel.addEventListener("load", onGamePanelResourceLoad, true);
   bindPhotoInput(els.spotPhotoInput, addPhotosAtPlayer);
   bindPhotoInput(els.spotCameraInput, addPhotosAtPlayer);
   bindPhotoInput(els.buildingPhotoInput, addPhotosToSelectedBuilding);
@@ -4882,13 +4883,31 @@ function renderPhotoTileListHtml(photos, options) {
     const url = getPhotoUrl(photo);
     const active = photo.id === options.activeId;
     const selected = photo.id === options.selectedId;
+    const style = getPhotoTileStyle(photo);
     return `
-      <button class="photo-tile${active ? " active" : ""}${selected ? " selected" : ""}" type="button" data-game-action="${escapeAttr(options.action)}" data-photo-id="${escapeAttr(photo.id)}" data-photo-index="${index}">
+      <button class="photo-tile${active ? " active" : ""}${selected ? " selected" : ""}" type="button" data-game-action="${escapeAttr(options.action)}" data-photo-id="${escapeAttr(photo.id)}" data-photo-index="${index}"${style ? ` style="${style}"` : ""}>
         ${url ? `<img src="${url}" alt="">` : `<span>照片</span>`}
         <span class="photo-tile-index">${index + 1}</span>
       </button>
     `;
   }).join("");
+}
+
+function getPhotoTileStyle(photo) {
+  const width = Number(photo?.width || photo?.resource?.width);
+  const height = Number(photo?.height || photo?.resource?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return "";
+  const ratio = clamp(width / height, 0.15, 8);
+  return `--photo-ratio:${ratio.toFixed(6)};`;
+}
+
+function onGamePanelResourceLoad(event) {
+  const img = event.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  const tile = img.closest(".photo-tile");
+  if (!tile || !img.naturalWidth || !img.naturalHeight) return;
+  const ratio = clamp(img.naturalWidth / img.naturalHeight, 0.15, 8);
+  tile.style.setProperty("--photo-ratio", ratio.toFixed(6));
 }
 
 function renderCampusInteractionHtml(region, building) {
@@ -5341,6 +5360,7 @@ async function createPhotoFromFile(file, context = {}) {
   const photoId = createId("photo");
   let original = null;
   let previewSource = file;
+  let previewSize = null;
   if (await canUseAlbumFolder()) {
     try {
       original = await saveOriginalPhotoToAlbum(file, photoId, context);
@@ -5353,18 +5373,29 @@ async function createPhotoFromFile(file, context = {}) {
     }
     if (original) {
       try {
-        previewSource = await createPreviewBlob(file);
+        const preview = await createPreviewBlob(file);
+        previewSource = preview.blob;
+        previewSize = preview.size;
       } catch (error) {
         console.warn("预览图压缩失败，改用原图预览:", error);
         previewSource = file;
       }
     }
   }
+  if (!previewSize && file.type?.startsWith("image/")) {
+    previewSize = await readImageBlobSize(previewSource);
+  }
   const previewName = original ? makePreviewFileName(file.name, photoId) : (file.name || "photo");
   const record = await blobToResourceRecord(previewSource, previewName);
+  if (previewSize?.width && previewSize?.height) {
+    record.width = previewSize.width;
+    record.height = previewSize.height;
+  }
   return normalizePhotoRecord({
     id: photoId,
     name: file.name || "photo",
+    width: record.width || 0,
+    height: record.height || 0,
     resource: record,
     original,
     createdAt: new Date().toISOString()
@@ -5451,7 +5482,23 @@ async function createPreviewBlob(file) {
   canvas.height = height;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0, width, height);
-  return await canvasToBlob(canvas, PHOTO_PREVIEW_TYPE, PHOTO_PREVIEW_QUALITY);
+  return {
+    blob: await canvasToBlob(canvas, PHOTO_PREVIEW_TYPE, PHOTO_PREVIEW_QUALITY),
+    size: { width, height }
+  };
+}
+
+async function readImageBlobSize(blob) {
+  if (!blob?.type?.startsWith("image/")) return null;
+  try {
+    const image = await loadImageElement(URL.createObjectURL(blob), { revoke: true });
+    return {
+      width: image.naturalWidth || 0,
+      height: image.naturalHeight || 0
+    };
+  } catch {
+    return null;
+  }
 }
 
 function canvasToBlob(canvas, type, quality) {
@@ -10490,10 +10537,14 @@ function normalizePhotoRecord(source) {
   return {
     id: typeof source.id === "string" ? source.id : createId("photo"),
     name: typeof source.name === "string" ? source.name : resource.name || "photo",
+    width: Number.isFinite(Number(source.width || resource.width)) ? Math.max(1, Math.round(Number(source.width || resource.width))) : 0,
+    height: Number.isFinite(Number(source.height || resource.height)) ? Math.max(1, Math.round(Number(source.height || resource.height))) : 0,
     resource: {
       name: resource.name || source.name || "photo",
       type: resource.type || "image/*",
       size: Number.isFinite(Number(resource.size)) ? Number(resource.size) : 0,
+      width: Number.isFinite(Number(resource.width || source.width)) ? Math.max(1, Math.round(Number(resource.width || source.width))) : 0,
+      height: Number.isFinite(Number(resource.height || source.height)) ? Math.max(1, Math.round(Number(resource.height || source.height))) : 0,
       data: resource.data || "",
       buffer: resource.buffer || null
     },
