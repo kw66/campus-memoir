@@ -163,6 +163,8 @@ button:disabled {
 }
 
 .game-info-panel {
+  width: min(980px, 100%);
+  justify-self: end;
   min-height: 0;
   padding: 10px;
   border: 1px solid var(--line);
