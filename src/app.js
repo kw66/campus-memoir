@@ -4906,7 +4906,6 @@ function renderPhotoPanelHtml(spot) {
         <input class="game-input" data-game-field="photoSpotName" type="text" value="${escapeAttr(spot.name || (entranceTarget ? spotTitle : ""))}" placeholder="${escapeAttr(spotTitle)}">
         <input class="game-input" data-game-field="photoSpotDate" type="date" value="${escapeAttr(getSpotPanelDateValue(spot))}">
       </div>
-      ${entranceTarget ? `<div class="entrance-target">入口：${escapeHtml(getBuildingDisplayName(entranceTarget.region, entranceTarget.building))}</div>` : ""}
       <div class="game-actions dense photo-actions">
         ${entranceTarget ? `<button class="primary-button" type="button" data-game-action="enterFromPhotoSpot" ${entranceActive ? "" : "disabled"}>进入</button>` : ""}
         <button class="secondary-button" type="button" data-game-action="moveSpotPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>

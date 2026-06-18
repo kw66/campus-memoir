@@ -878,17 +878,6 @@ button:disabled {
   white-space: nowrap;
 }
 
-.entrance-target {
-  min-height: 28px;
-  padding: 5px 8px;
-  border: 1px solid #d7c7a8;
-  border-radius: 6px;
-  background: #fff8e8;
-  color: var(--accent-strong);
-  font-size: 12px;
-  font-weight: 900;
-}
-
 .building-chip.active,
 .interaction-chip.active,
 .room-chip.active,
