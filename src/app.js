@@ -16,6 +16,7 @@ const STRUCTURE_BRUSH_SIZE = 24;
 const LINEAR_STRUCTURE_WIDTH = 12;
 const DEFAULT_PLAYER_RADIUS = 26;
 const PLAYER_COLLISION_RADIUS_FACTOR = 0.42;
+const PRIORITY_PATH_TOUCH_RADIUS_FACTOR = 1;
 const DEFAULT_WALK_SPEED = 320;
 const WALK_SPEED_FACTOR = 0.75;
 const MOVE_SLIDE_SAMPLE_RADIUS = 8;
@@ -2600,7 +2601,7 @@ function resolvePlayerMove(origin, direction, distanceValue) {
 
 function resolveMoveTargetRecovery(origin, direction, distanceValue) {
   if (!distanceValue || (!direction.x && !direction.y)) return null;
-  const probeDistance = Math.max(distanceValue, MOVE_SLIDE_MIN_DISTANCE * 4);
+  const probeDistance = Math.max(distanceValue * 3, MOVE_SLIDE_MIN_DISTANCE * 8, getPlayerCollisionRadius(origin) * 2, 12);
   const angles = [
     Math.PI / 10,
     -Math.PI / 10,
@@ -2932,6 +2933,8 @@ function getFallbackSlideMove(origin, fullDelta) {
 
 function findFarthestWalkableMove(origin, delta) {
   if (Math.hypot(delta.x, delta.y) < MOVE_SLIDE_MIN_DISTANCE) return null;
+  const originWalkable = canPlayerMoveTo(origin);
+  const originTouchesPriorityPath = isPlayerCircleTouchingPriorityPath(origin);
   let low = 0;
   let high = 1;
   let best = null;
@@ -2948,7 +2951,25 @@ function findFarthestWalkableMove(origin, delta) {
       high = t;
     }
   }
+  if (!best && (!originWalkable || originTouchesPriorityPath)) {
+    const escape = findFirstWalkableMove(origin, delta);
+    if (escape) return escape;
+  }
   return best && distance(origin, best) >= MOVE_SLIDE_MIN_DISTANCE ? best : null;
+}
+
+function findFirstWalkableMove(origin, delta) {
+  const length = Math.hypot(delta.x, delta.y);
+  if (length < MOVE_SLIDE_MIN_DISTANCE) return null;
+  const steps = Math.max(6, Math.ceil(length / Math.max(1, MOVE_SLIDE_MIN_DISTANCE)));
+  for (let index = 1; index <= steps; index++) {
+    const point = clampMoveTarget(origin, {
+      x: delta.x * (index / steps),
+      y: delta.y * (index / steps)
+    });
+    if (canPlayerMoveTo(point)) return point;
+  }
+  return null;
 }
 
 function normalizeVector(vector) {
@@ -3051,11 +3072,14 @@ function isPriorityPathType(type) {
 }
 
 function isPlayerCircleTouchingPriorityPath(point) {
-  return isPlayerCircleTouchingWalkableStructure(point, { priorityOnly: true });
+  return isPlayerCircleTouchingWalkableStructure(point, {
+    priorityOnly: true,
+    radius: getPriorityPathTouchRadius(point)
+  });
 }
 
 function isPlayerCircleTouchingWalkableStructure(point, options = {}) {
-  const radius = getPlayerCollisionRadius(point);
+  const radius = Number.isFinite(Number(options.radius)) ? Math.max(1, Number(options.radius)) : getPlayerCollisionRadius(point);
   const editData = getSelectedEditData();
   const visibleObjects = getVisibleStructureObjectIds();
   for (const region of editData.structureRegions || []) {
@@ -3238,6 +3262,11 @@ function nearestPointOnSegment(point, start, end) {
 function getPlayerCollisionRadius(point = state.gameData.player) {
   const visualRadius = Number(point?.radius || state.gameData.player.radius) || DEFAULT_PLAYER_RADIUS;
   return Math.max(4, visualRadius * PLAYER_COLLISION_RADIUS_FACTOR);
+}
+
+function getPriorityPathTouchRadius(point = state.gameData.player) {
+  const visualRadius = Number(point?.radius || state.gameData.player.radius) || DEFAULT_PLAYER_RADIUS;
+  return Math.max(getPlayerCollisionRadius(point), visualRadius * PRIORITY_PATH_TOUCH_RADIUS_FACTOR);
 }
 
 function isTransparentMapPixel(point) {
