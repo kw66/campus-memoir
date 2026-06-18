@@ -33,6 +33,7 @@ const MOVE_TARGET_PATH_COOLDOWN_SECONDS = 0.55;
 const MOVE_TARGET_WAYPOINT_DISTANCE = 10;
 const MOVE_TARGET_PATH_MAX_NODES = 18000;
 const MOVE_MAX_BLOCKED_GAP = 3;
+const STRUCTURE_CLICK_HIT_DISTANCE = 8;
 const MAP_ALPHA_VISIBILITY_TOLERANCE = 2;
 const NEARBY_CONTEXT_REFRESH_DISTANCE = 18;
 const GAME_CLICK_MOVE_TOLERANCE = 14;
@@ -2358,7 +2359,8 @@ async function renderGameView(options = {}) {
       width: state.mapImage.naturalWidth,
       height: state.mapImage.naturalHeight
     };
-    initializeGameForCurrentMap(options);
+    const initializedChanged = initializeGameForCurrentMap(options);
+    if (initializedChanged) await saveCurrentGameData();
     els.mapEmpty.hidden = true;
     els.missingMapActions.hidden = true;
     updateImagePalette();
@@ -2395,25 +2397,37 @@ function renderSchoolInfoSummary(school) {
 }
 
 function initializeGameForCurrentMap(options = {}) {
-  if (!state.mapNaturalSize.width || !state.mapNaturalSize.height) return;
+  if (!state.mapNaturalSize.width || !state.mapNaturalSize.height) return false;
+  let changed = false;
   const player = state.gameData.player;
   const hasValidPosition = Number.isFinite(player.x) && Number.isFinite(player.y) && player.x > 0 && player.y > 0;
   if (!hasValidPosition || options.resetPlayer) {
     player.x = state.mapNaturalSize.width / 2;
     player.y = state.mapNaturalSize.height / 2;
-    markGameDirty();
+    markGameDirty({ defer: true });
+    changed = true;
   }
-  player.x = clamp(player.x, 0, state.mapNaturalSize.width);
-  player.y = clamp(player.y, 0, state.mapNaturalSize.height);
+  const clampedX = clamp(player.x, 0, state.mapNaturalSize.width);
+  const clampedY = clamp(player.y, 0, state.mapNaturalSize.height);
+  if (player.x !== clampedX || player.y !== clampedY) {
+    player.x = clampedX;
+    player.y = clampedY;
+    markGameDirty({ defer: true });
+    changed = true;
+  }
   if (!canPlayerMoveFreelyFrom(player)) {
     const walkable = findNearbyWalkablePoint(player, { requireFreedom: true })
       || findNearbyWalkablePoint(player)
       || { x: state.mapNaturalSize.width / 2, y: state.mapNaturalSize.height / 2 };
-    player.x = walkable.x;
-    player.y = walkable.y;
-    markGameDirty();
+    if (player.x !== walkable.x || player.y !== walkable.y) {
+      player.x = walkable.x;
+      player.y = walkable.y;
+      markGameDirty({ defer: true });
+      changed = true;
+    }
   }
   updateNearbyGameContext();
+  return changed;
 }
 
 function setGameViewToDefaultFollow() {
@@ -3813,6 +3827,32 @@ function getNearbyStructureTargets(point) {
     });
   }
   return targets.sort((a, b) => a.distance - b.distance);
+}
+
+function getClickedStructureTarget(point) {
+  let best = null;
+  for (const region of getStructureRegionCandidatesNear(point, STRUCTURE_CLICK_HIT_DISTANCE)) {
+    if (region.visible === false || !isInteractiveStructureType(region?.type || "custom")) continue;
+    const bounds = getStructureRegionBounds(region);
+    if (!bounds || distanceToBounds(point, bounds) > STRUCTURE_CLICK_HIT_DISTANCE) continue;
+    const areas = getRegionAreas(region);
+    const insideBaseArea = areas.some((area) => isPointInStructureArea(point, area, region));
+    const insideErasedArea = insideBaseArea && getRegionEraseAreas(region).some((area) => isPointInArea(point, area));
+    if (insideErasedArea) continue;
+    const distanceToHit = insideBaseArea ? 0 : distanceToRegion(point, areas, region);
+    if (distanceToHit > STRUCTURE_CLICK_HIT_DISTANCE) continue;
+    const target = {
+      id: region.id,
+      region,
+      bounds,
+      distance: distanceToHit,
+      label: getStructureInteractionLabel(region),
+      kind: "structure",
+      key: `structure:${region.id}`
+    };
+    if (!best || target.distance < best.distance) best = target;
+  }
+  return best;
 }
 
 function getNearbyPhotoSpotTargets(point) {
@@ -7434,7 +7474,7 @@ function handleGameCanvasClick(imagePoint) {
     renderGamePanel({ force: true });
     return;
   }
-  const clickedStructure = getNearbyStructureTargets(imagePoint)[0];
+  const clickedStructure = getClickedStructureTarget(imagePoint);
   const target = clickedStructure
     ? state.currentNearbyInteractionTargets.find((item) => item.key === clickedStructure.key)
     : null;
