@@ -1832,14 +1832,26 @@ function getCurrentFormMapMeta() {
 }
 
 function loadSchools() {
+  const current = readStoredSchoolList(STORAGE_KEY);
+  const legacy = readStoredSchoolList(LEGACY_STORAGE_KEY);
+  if (hasUsableSchoolList(current)) return current;
+  if (hasUsableSchoolList(legacy)) return legacy;
+  return current || legacy || [];
+}
+
+function readStoredSchoolList(key) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!raw) return [];
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
-    return [];
+    return null;
   }
+}
+
+function hasUsableSchoolList(schools) {
+  return Array.isArray(schools) && normalizeSchools(schools).length > 0;
 }
 
 function normalizeSchools(schools) {
