@@ -778,6 +778,10 @@ body.game-info-open {
   gap: 8px;
 }
 
+.interior-spot-fields {
+  grid-template-columns: minmax(0, 1.1fr) minmax(118px, 0.75fr) minmax(96px, 0.55fr);
+}
+
 .photo-stage {
   min-height: clamp(260px, 48vh, 620px);
   display: grid;
@@ -920,28 +924,57 @@ body.game-info-open {
 .game-actions.photo-actions [data-game-action="linkPhotoSpotEntrance"],
 .game-actions.photo-actions [data-game-action="enterFromPhotoSpot"],
 .game-actions.photo-actions [data-game-action="captureSpotPhoto"],
+.game-actions.photo-actions [data-game-action="captureInteriorSpotPhoto"],
 .game-actions.photo-actions [data-game-action="captureBuildingPhoto"],
 .game-actions.photo-actions [data-game-action="uploadSpotPhoto"],
+.game-actions.photo-actions [data-game-action="uploadInteriorSpotPhoto"],
 .game-actions.photo-actions [data-game-action="uploadBuildingPhoto"] {
   grid-column: span 2;
   order: 1;
 }
 
 .game-actions.photo-actions [data-game-action="moveSpotPhotoBackward"],
+.game-actions.photo-actions [data-game-action="moveInteriorSpotPhotoBackward"],
 .game-actions.photo-actions [data-game-action="moveBuildingPhotoBackward"] {
   grid-column: span 2;
   order: 2;
 }
 
 .game-actions.photo-actions [data-game-action="moveSpotPhotoForward"],
+.game-actions.photo-actions [data-game-action="moveInteriorSpotPhotoForward"],
 .game-actions.photo-actions [data-game-action="moveBuildingPhotoForward"] {
   grid-column: span 2;
   order: 3;
 }
 
 .game-actions.photo-actions [data-game-action="deletePhotoSpotSelected"],
+.game-actions.photo-actions [data-game-action="deleteInteriorSpotSelected"],
 .game-actions.photo-actions [data-game-action="deleteBuildingPhoto"] {
   grid-column: span 2;
+  order: 4;
+}
+
+.game-actions.interior-spot-actions [data-game-action="captureInteriorSpotPhoto"],
+.game-actions.interior-spot-actions [data-game-action="uploadInteriorSpotPhoto"] {
+  grid-column: span 3;
+  order: 1;
+}
+
+.game-actions.interior-spot-actions [data-game-action="moveInteriorSpotPhotoBackward"],
+.game-actions.interior-spot-actions [data-game-action="moveInteriorSpotPhotoForward"],
+.game-actions.interior-spot-actions [data-game-action="deleteInteriorSpotSelected"] {
+  grid-column: span 2;
+}
+
+.game-actions.interior-spot-actions [data-game-action="moveInteriorSpotPhotoBackward"] {
+  order: 2;
+}
+
+.game-actions.interior-spot-actions [data-game-action="moveInteriorSpotPhotoForward"] {
+  order: 3;
+}
+
+.game-actions.interior-spot-actions [data-game-action="deleteInteriorSpotSelected"] {
   order: 4;
 }
 
@@ -1162,21 +1195,6 @@ textarea.game-input {
 .item-add-row,
 .person-add-row {
   grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.interior-spot-section {
-  display: grid;
-  gap: 8px;
-  padding-top: 4px;
-}
-
-.interior-spot-actions {
-  grid-template-columns: 1fr;
-}
-
-.interior-spot-detail {
-  display: grid;
-  gap: 8px;
 }
 
 .legacy-entity-row:empty {
@@ -2260,6 +2278,14 @@ textarea.game-input {
   .building-fields {
     grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
     gap: 6px;
+  }
+
+  .interior-spot-fields {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  }
+
+  .interior-spot-fields select {
+    grid-column: 1 / -1;
   }
 
   .photo-list {

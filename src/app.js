@@ -493,7 +493,11 @@ const state = {
   nearbyContextLastPoint: null,
   selectedNearbyInteractionKey: "",
   defaultPhotoSpotInteractionKey: "",
+  currentInteriorInteractionTargets: [],
+  selectedInteriorInteractionKey: "",
+  defaultInteriorSpotInteractionKey: "",
   selectedSpotPhotoForEditId: "",
+  selectedInteriorSpotPhotoForEditId: "",
   selectedBuildingPhotoForEditId: "",
   gamePointerDown: null,
   gameTouches: new Map(),
@@ -3113,10 +3117,11 @@ function updateInteriorMovement(dt) {
   }
   const moved = distance(previous, target) >= MOVE_APPLY_MIN_DISTANCE;
   const roomChanged = syncSelectedRoomFromInteriorPlayer({ silent: true });
+  const contextChanged = updateNearbyGameContext();
   if (moved) markGameDirty({ defer: true, keepExplorationCache: true });
-  if (roomChanged) renderGamePanel({ force: true });
+  if (roomChanged || contextChanged) renderGamePanel({ force: true });
   queueDraw();
-  return moved || roomChanged;
+  return moved || roomChanged || contextChanged;
 }
 
 function resolvePlayerMove(origin, direction, distanceValue) {
@@ -4104,6 +4109,8 @@ function updateNearbyGameContext() {
   const previousKey = getNearbyContextKey();
   if (state.gameData.location.kind === "building") {
     const buildingId = state.gameData.location.buildingId || state.gameData.selectedBuildingId || "";
+    const building = buildingId ? getOrCreateBuildingMemory(buildingId) : null;
+    state.currentInteriorInteractionTargets = getInteriorInteractionTargets();
     state.currentNearbyInteractionTargets = [];
     state.currentNearbyPhotoSpotId = "";
     state.currentNearbyBuildingIds = [];
@@ -4114,9 +4121,34 @@ function updateNearbyGameContext() {
     state.selectedSpotPhotoForEditId = "";
     state.selectedBuildingPhotoForEditId = "";
     state.gameData.selectedBuildingId = buildingId;
-    if (buildingId) getOrCreateBuildingMemory(buildingId);
+    if (building) {
+      const spotTarget = state.currentInteriorInteractionTargets.find((target) => target.kind === "interiorSpot");
+      if (spotTarget && state.defaultInteriorSpotInteractionKey !== spotTarget.key) {
+        state.selectedInteriorInteractionKey = spotTarget.key;
+        state.defaultInteriorSpotInteractionKey = spotTarget.key;
+      } else if (!spotTarget) {
+        state.defaultInteriorSpotInteractionKey = "";
+      }
+      if (!state.currentInteriorInteractionTargets.some((target) => target.key === state.selectedInteriorInteractionKey)) {
+        state.selectedInteriorInteractionKey = state.currentInteriorInteractionTargets[0]?.key || "";
+      }
+      const selectedInteriorTarget = getSelectedInteriorInteractionTarget();
+      if (selectedInteriorTarget?.kind === "interiorSpot") {
+        state.gameData.selectedRoomId = selectedInteriorTarget.room.id;
+        state.gameData.location.roomId = selectedInteriorTarget.room.id;
+        selectedInteriorTarget.room.activeSpotId = selectedInteriorTarget.spot.id;
+      } else if (selectedInteriorTarget?.kind === "venue") {
+        state.gameData.selectedRoomId = selectedInteriorTarget.room.id;
+        state.gameData.location.roomId = selectedInteriorTarget.room.id;
+        state.selectedInteriorSpotPhotoForEditId = "";
+      }
+    }
     return previousKey !== getNearbyContextKey();
   }
+  state.currentInteriorInteractionTargets = [];
+  state.selectedInteriorInteractionKey = "";
+  state.defaultInteriorSpotInteractionKey = "";
+  state.selectedInteriorSpotPhotoForEditId = "";
   const player = state.gameData.player;
   const photoTarget = getNearbyPhotoSpotTarget(player);
   const structureTargets = getNearbyStructureTargets(player);
@@ -4169,12 +4201,55 @@ function getNearbyContextKey() {
     state.gameData.location.kind,
     state.gameData.location.buildingId || "",
     state.currentNearbyPhotoSpotId || "",
+    state.currentInteriorInteractionTargets.map((item) => item.key).join(","),
+    state.selectedInteriorInteractionKey || "",
     state.currentNearbyInteractionTargets.map((item) => item.key).join(","),
     state.currentNearbyBuildingIds.join(","),
     state.selectedNearbyInteractionKey || "",
     state.gameData.selectedPhotoSpotId || "",
     state.gameData.selectedBuildingId || ""
   ].join("|");
+}
+
+function getInteriorInteractionTargets(point = null) {
+  const building = getSelectedBuildingMemory();
+  if (!building) return [];
+  const player = point || getInteriorPlayer(building);
+  const cell = getInteriorCellForPoint(player, building);
+  const targets = [];
+  const spotTarget = getInteriorSpotAtPoint(player, building);
+  if (spotTarget) {
+    targets.push({
+      id: spotTarget.spot.id,
+      kind: "interiorSpot",
+      room: spotTarget.room,
+      spot: spotTarget.spot,
+      index: spotTarget.index,
+      distance: spotTarget.distance,
+      label: getInteriorSpotDisplayName(spotTarget.spot, spotTarget.index),
+      key: `interiorSpot:${spotTarget.room.id}:${spotTarget.spot.id}`
+    });
+  }
+  if (cell?.room) {
+    targets.push({
+      id: cell.room.id,
+      kind: "venue",
+      room: cell.room,
+      distance: distance(player, {
+        x: clamp(player.x, cell.x, cell.x + cell.width),
+        y: clamp(player.y, cell.y, cell.y + cell.height)
+      }),
+      label: getRoomDisplayName(cell.room),
+      key: `venue:${cell.room.id}`
+    });
+  }
+  return targets;
+}
+
+function getSelectedInteriorInteractionTarget() {
+  return state.currentInteriorInteractionTargets.find((item) => item.key === state.selectedInteriorInteractionKey)
+    || state.currentInteriorInteractionTargets[0]
+    || null;
 }
 
 function getActivePhotoSpot() {
@@ -4280,6 +4355,17 @@ function getSpotPanelDateValue(spot) {
   return selectedPhoto
     ? getIsoDateInputValue(selectedPhoto.capturedAt || selectedPhoto.createdAt || "")
     : getPhotoSpotDateValue(spot);
+}
+
+function getInteriorSpotDateValue(spot) {
+  return getIsoDateInputValue(spot?.capturedAt || spot?.createdAt || "");
+}
+
+function getInteriorSpotPanelDateValue(spot) {
+  const selectedPhoto = getSelectedInteriorSpotPhotoForEdit(spot);
+  return selectedPhoto
+    ? getIsoDateInputValue(selectedPhoto.capturedAt || selectedPhoto.createdAt || "")
+    : getInteriorSpotDateValue(spot);
 }
 
 function getSelectedBuildingPhotoForEdit(building) {
@@ -4623,11 +4709,12 @@ function getInteriorSpecialRoomCells(rooms) {
         ];
   }
   if (rooms.length === 3) {
-    const rightH = (h - gap * 2) / 3;
+    const firstW = (w - gap * 2) / 2;
+    const sideW = (w - firstW - gap * 2) / 2;
     return [
-      make(rooms[0], 0, 0, 0, halfW, h),
-      make(rooms[1], 1, halfW + gap, 0, halfW, rightH),
-      make(rooms[2], 2, halfW + gap, rightH + gap, halfW, h - rightH - gap)
+      make(rooms[0], 0, 0, 0, firstW, h),
+      make(rooms[1], 1, firstW + gap, 0, sideW, h),
+      make(rooms[2], 2, firstW + sideW + gap * 2, 0, sideW, h)
     ];
   }
   if (rooms.length === 4) {
@@ -4698,6 +4785,7 @@ function selectInteriorSpotTarget(target) {
   state.gameData.selectedRoomId = target.room.id;
   state.gameData.location.roomId = target.room.id;
   target.room.activeSpotId = target.spot.id;
+  state.selectedInteriorInteractionKey = `interiorSpot:${target.room.id}:${target.spot.id}`;
   state.gameData.selectedItemId = "";
   state.gameData.selectedPersonId = "";
   markGameDirty({ defer: true });
@@ -4733,7 +4821,9 @@ function moveInteriorPlayerToRoom(roomId) {
   state.gameData.location.roomId = roomId;
   state.gameData.selectedItemId = "";
   state.gameData.selectedPersonId = "";
+  state.selectedInteriorInteractionKey = `venue:${roomId}`;
   clearMoveTarget();
+  updateNearbyGameContext();
   markGameDirty({ defer: true });
   renderGamePanel({ force: true });
   queueDraw();
@@ -5455,6 +5545,8 @@ function renderGamePanel(options = {}) {
   const room = getSelectedRoom();
   const item = getSelectedItem();
   const person = getSelectedPerson();
+  const interiorTarget = getSelectedInteriorInteractionTarget();
+  const interiorSpot = interiorTarget?.kind === "interiorSpot" ? interiorTarget.spot : getSelectedInteriorSpot(room);
   const key = JSON.stringify({
     location: state.gameData.location,
     spotId: spot?.id || "",
@@ -5481,8 +5573,17 @@ function renderGamePanel(options = {}) {
     roomPhotoIndex: room?.activePhotoIndex || 0,
     roomSpots: room?.spots?.length || 0,
     roomSpotId: room?.activeSpotId || "",
-    roomSpotPhotos: getSelectedInteriorSpot(room)?.photos?.length || 0,
-    roomSpotKind: getSelectedInteriorSpot(room)?.kind || "",
+    roomSpotPhotos: interiorSpot?.photos?.length || 0,
+    roomSpotPhotoOrder: interiorSpot?.photos?.map((photo) => photo.id).join(",") || "",
+    roomSpotIndex: interiorSpot?.activeIndex || 0,
+    roomSpotName: interiorSpot?.name || "",
+    roomSpotDate: interiorSpot?.capturedAt || "",
+    roomSpotKind: interiorSpot?.kind || "",
+    roomSpotSelectedPhotoId: getSelectedInteriorSpotPhotoId(interiorSpot) || "",
+    roomSpotEditPhotoId: state.selectedInteriorSpotPhotoForEditId || "",
+    roomSpotEditPhotoDate: interiorSpot ? getSelectedInteriorSpotPhotoForEdit(interiorSpot)?.capturedAt || "" : "",
+    interiorTargetKey: interiorTarget?.key || "",
+    interiorTargets: state.currentInteriorInteractionTargets.map((item) => item.key).join(","),
     items: room?.items.length || 0,
     itemId: item?.id || "",
     itemPhotos: item?.photos.length || 0,
@@ -5498,7 +5599,7 @@ function renderGamePanel(options = {}) {
   if (!options.force && key === state.gamePanelKey) return;
   state.gamePanelKey = key;
   if (state.gameData.location.kind === "building") {
-    els.gamePanel.innerHTML = renderInteriorPanelHtml(building, room, item, person);
+    els.gamePanel.innerHTML = renderInteriorInteractionPanelHtml(building, room, item, person);
     return;
   }
   if (!selectedTarget) {
@@ -5520,6 +5621,22 @@ function renderNearbyInteractionChooserHtml() {
   if (targets.length <= 1) return "";
   const chips = targets.map((target) => `
     <button class="interaction-chip${target.key === state.selectedNearbyInteractionKey ? " active" : ""}" type="button" data-game-action="selectInteraction" data-interaction-key="${escapeAttr(target.key)}">${escapeHtml(target.label)}</button>
+  `).join("");
+  return `<div class="interaction-chip-row">${chips}</div>`;
+}
+
+function renderInteriorInteractionPanelHtml(building, room, item, person) {
+  const target = getSelectedInteriorInteractionTarget();
+  const chooser = renderInteriorInteractionChooserHtml();
+  if (target?.kind === "interiorSpot") return chooser + renderInteriorSpotPanelHtml(target.room, target.spot, target.index);
+  return chooser + renderInteriorVenuePanelHtml(building, target?.room || room, item, person);
+}
+
+function renderInteriorInteractionChooserHtml() {
+  const targets = state.currentInteriorInteractionTargets;
+  if (targets.length <= 1) return "";
+  const chips = targets.map((target) => `
+    <button class="interaction-chip${target.key === state.selectedInteriorInteractionKey ? " active" : ""}" type="button" data-game-action="selectInteriorInteraction" data-interaction-key="${escapeAttr(target.key)}">${escapeHtml(target.label)}</button>
   `).join("");
   return `<div class="interaction-chip-row">${chips}</div>`;
 }
@@ -5558,12 +5675,54 @@ function renderPhotoPanelHtml(spot) {
   `;
 }
 
+function renderInteriorSpotPanelHtml(room, spot, index = 0) {
+  if (!room || !spot) return "";
+  const selectedId = getSelectedInteriorSpotPhotoId(spot);
+  const photoList = renderInteriorSpotPhotoListHtml(spot, selectedId);
+  const spotTitle = getInteriorSpotDisplayName(spot, index);
+  const canDeleteSpot = !spot.photos.length;
+  const editSelectedId = getSelectedInteriorSpotPhotoForEditId(spot);
+  const editIndex = getInteriorSpotPhotoIndexById(spot, editSelectedId);
+  const moveBackDisabled = editIndex <= 0;
+  const moveForwardDisabled = editIndex < 0 || editIndex >= spot.photos.length - 1;
+  const kindOptions = INTERIOR_SPOT_KINDS.map((kind) => `<option value="${escapeAttr(kind)}" ${kind === (spot.kind || "照片") ? "selected" : ""}>${escapeHtml(kind)}</option>`).join("");
+  return `
+    <section class="game-card photo-card interior-spot-card">
+      <div class="spot-fields interior-spot-fields">
+        <input class="game-input" data-game-field="interiorSpotName" type="text" value="${escapeAttr(spot.name || "")}" placeholder="${escapeAttr(spotTitle)}">
+        <input class="game-input" data-game-field="interiorSpotDate" type="date" value="${escapeAttr(getInteriorSpotPanelDateValue(spot))}">
+        <select class="game-input" data-game-field="interiorSpotKind" aria-label="拍照点类型">${kindOptions}</select>
+      </div>
+      <div class="game-actions dense photo-actions interior-spot-actions">
+        <button class="secondary-button" type="button" data-game-action="moveInteriorSpotPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
+        <button class="secondary-button" type="button" data-game-action="moveInteriorSpotPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
+        <button class="secondary-button" type="button" data-game-action="captureInteriorSpotPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
+        <button class="secondary-button" type="button" data-game-action="uploadInteriorSpotPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
+        <button class="secondary-button danger" type="button" data-game-action="deleteInteriorSpotSelected" ${canDeleteSpot || editSelectedId ? "" : "disabled"}>删除</button>
+      </div>
+      <div class="photo-list" data-photo-list="interior-spot">
+        ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
+      </div>
+      ${state.gameNotice ? `<div class="game-notice">${escapeHtml(state.gameNotice)}</div>` : ""}
+    </section>
+  `;
+}
+
 function renderSpotPhotoListHtml(spot, selectedId) {
   const editSelectedId = getSelectedSpotPhotoForEditId(spot);
   return renderPhotoTileListHtml(spot.photos || [], {
     activeId: selectedId,
     selectedId: editSelectedId,
     action: "selectSpotPhoto"
+  });
+}
+
+function renderInteriorSpotPhotoListHtml(spot, selectedId) {
+  const editSelectedId = getSelectedInteriorSpotPhotoForEditId(spot);
+  return renderPhotoTileListHtml(spot.photos || [], {
+    activeId: selectedId,
+    selectedId: editSelectedId,
+    action: "selectInteriorSpotPhoto"
   });
 }
 
@@ -5677,57 +5836,20 @@ function renderEntranceListHtml(region, building) {
   `).join("");
 }
 
-function renderInteriorPanelHtml(building, room, item, person) {
+function renderInteriorVenuePanelHtml(building, room, item, person) {
   if (state.gameData.location.kind !== "building" || !building) return "";
   const rule = getBuildingRule(building);
-  const venueRule = getVenueRule(room, building);
-  const selectedIsSelf = isSelfPerson(person);
   const roomOptions = renderOptions(rule.roomTypes, "自定义");
   const roomTypeOptions = renderOptions(rule.roomTypes, room?.type || "自定义");
-  const itemTypeOptions = renderOptions(ITEM_TYPES, item?.type || "物品");
-  const personTypeOptions = renderOptions(PERSON_TYPES, person?.type || "同学");
   const region = getStructureRegionById(state.gameData.location.buildingId);
   const buildingName = getBuildingDisplayName(region, building);
-  const entranceCount = getBuildingEntranceSpots(building.id).length;
   const rooms = building.rooms.map((item) => `
     <button class="room-chip${item.id === state.gameData.selectedRoomId ? " active" : ""}" type="button" data-game-action="selectRoom" data-room-id="${escapeAttr(item.id)}">${escapeHtml(getRoomDisplayName(item))}</button>
   `).join("");
-  const roomItems = room?.items?.map((entry) => `
-    <button class="item-chip${entry.id === state.gameData.selectedItemId ? " active" : ""}" type="button" data-game-action="selectItem" data-item-id="${escapeAttr(entry.id)}">${escapeHtml(getItemDisplayName(entry, venueRule.itemLabel))}</button>
-  `).join("") || "";
-  const people = room?.people?.map((item) => `
-    <button class="person-chip${item.id === state.gameData.selectedPersonId ? " active" : ""}" type="button" data-game-action="selectPerson" data-person-id="${escapeAttr(item.id)}">${escapeHtml(getPersonDisplayName(item))}</button>
-  `).join("") || "";
   const roomPhotoList = renderPhotoTileListHtml(room?.photos || [], {
     activeId: getActivePhoto(room)?.id || "",
     selectedId: "",
     action: "selectRoomPhoto",
-    showDate: true
-  });
-  const dormPlayerPortraitHtml = selectedIsSelf ? `
-        <div class="player-portrait-card">
-          <span class="player-portrait-status">${state.gameData.player.portrait ? "地图大头贴已设置" : "地图仍使用默认圆点"}</span>
-          <button class="secondary-button" type="button" data-game-action="capturePlayerPortrait">拍大头贴</button>
-          <button class="secondary-button" type="button" data-game-action="uploadPlayerPortrait">选大头贴</button>
-        </div>
-  ` : "";
-  const itemPhotoList = renderPhotoTileListHtml(item?.photos || [], {
-    activeId: getActivePhoto(item)?.id || "",
-    selectedId: "",
-    action: "selectItemPhoto",
-    showDate: true
-  });
-  const personPhotoUrl = person?.photo ? getPhotoUrl(person.photo) : "";
-  const interiorSpot = getSelectedInteriorSpot(room);
-  const interiorSpotIndex = room?.spots?.findIndex((spot) => spot.id === interiorSpot?.id) ?? -1;
-  const interiorSpotOptions = INTERIOR_SPOT_KINDS.map((kind) => `<option value="${escapeAttr(kind)}" ${kind === (interiorSpot?.kind || "照片") ? "selected" : ""}>${escapeHtml(kind)}</option>`).join("");
-  const interiorSpotChips = room?.spots?.map((spot, index) => `
-    <button class="item-chip${spot.id === interiorSpot?.id ? " active" : ""}" type="button" data-game-action="selectInteriorSpot" data-spot-id="${escapeAttr(spot.id)}">${escapeHtml(getInteriorSpotDisplayName(spot, index))}</button>
-  `).join("") || "";
-  const interiorSpotPhotoList = renderPhotoTileListHtml(interiorSpot?.photos || [], {
-    activeId: getActivePhoto(interiorSpot)?.id || "",
-    selectedId: "",
-    action: "selectInteriorSpotPhoto",
     showDate: true
   });
   return `
@@ -5756,66 +5878,6 @@ function renderInteriorPanelHtml(building, room, item, person) {
         </div>
         <div class="photo-list interior-photo-list" data-photo-list="room">
           ${roomPhotoList || `<div class="photo-empty list-empty">还没有场所照片</div>`}
-        </div>
-        <div class="interior-spot-section">
-          <div class="game-actions dense interior-spot-actions">
-            <button class="secondary-button" type="button" data-game-action="addInteriorSpot">拍照点</button>
-          </div>
-          <div class="item-chip-row">${interiorSpotChips || `<span class="muted-inline">在室内地图当前位置添加拍照点</span>`}</div>
-          <div class="interior-spot-detail" ${interiorSpot ? "" : "hidden"}>
-            <div class="room-fields">
-              <input class="game-input" data-game-field="interiorSpotName" type="text" value="${escapeAttr(interiorSpot?.name || "")}" placeholder="${escapeAttr(interiorSpot ? getInteriorSpotDisplayName(interiorSpot, interiorSpotIndex) : "拍照点名称")}">
-              <select class="game-input" data-game-field="interiorSpotKind">${interiorSpotOptions}</select>
-            </div>
-            <textarea class="game-input" data-game-field="interiorSpotDescription" placeholder="备注">${escapeHtml(interiorSpot?.description || "")}</textarea>
-            <div class="game-actions dense interior-photo-actions">
-              <button class="secondary-button" type="button" data-game-action="captureInteriorSpotPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
-              <button class="secondary-button" type="button" data-game-action="uploadInteriorSpotPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
-              <button class="secondary-button danger" type="button" data-game-action="deleteInteriorSpotSelected" ${interiorSpot ? "" : "disabled"}>删除</button>
-            </div>
-            <div class="photo-list interior-photo-list compact-list" data-photo-list="interior-spot">
-              ${interiorSpotPhotoList || `<div class="photo-empty list-empty">还没有照片</div>`}
-            </div>
-          </div>
-        </div>
-        <div class="item-chip-row legacy-entity-row">${roomItems}</div>
-        <div class="item-detail" ${item ? "" : "hidden"}>
-          <div class="item-top">
-            <div class="item-fields">
-              <input class="game-input" data-game-field="itemName" type="text" value="${escapeAttr(item?.name || "")}" placeholder="物品名称">
-              <select class="game-input" data-game-field="itemType">${itemTypeOptions}</select>
-              <textarea class="game-input" data-game-field="itemDescription" placeholder="备注">${escapeHtml(item?.description || "")}</textarea>
-            </div>
-          </div>
-          <div class="game-actions dense interior-photo-actions">
-            <button class="secondary-button" type="button" data-game-action="captureItemPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
-            <button class="secondary-button" type="button" data-game-action="uploadItemPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
-            <button class="secondary-button" type="button" data-game-action="interactItem">互动</button>
-            <button class="secondary-button danger" type="button" data-game-action="deleteItemPhoto" ${!item || !item.photos.length ? "disabled" : ""}>删图</button>
-            <button class="secondary-button danger" type="button" data-game-action="deleteItem">删除</button>
-          </div>
-          <div class="photo-list interior-photo-list" data-photo-list="item">
-            ${itemPhotoList || `<div class="photo-empty list-empty">还没有物品照片</div>`}
-          </div>
-        </div>
-        <div class="person-chip-row legacy-entity-row">${people}</div>
-        <div class="person-detail" ${person ? "" : "hidden"}>
-          <div class="person-top">
-            <div class="person-photo${personPhotoUrl ? " has-photo" : ""}">${personPhotoUrl ? `<img src="${personPhotoUrl}" alt="">` : `<span>照片</span>`}</div>
-            <div class="person-fields">
-              <input class="game-input" data-game-field="personName" type="text" value="${escapeAttr(person?.name || "")}" placeholder="姓名">
-              <select class="game-input" data-game-field="personType" ${selectedIsSelf ? "disabled" : ""}>${personTypeOptions}</select>
-              <textarea class="game-input" data-game-field="personDescription" placeholder="背景资料">${escapeHtml(person?.description || "")}</textarea>
-            </div>
-          </div>
-          ${dormPlayerPortraitHtml}
-          <div class="game-actions dense">
-            <button class="secondary-button" type="button" data-game-action="capturePersonPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
-            <button class="secondary-button" type="button" data-game-action="uploadPersonPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
-            <button class="secondary-button" type="button" data-game-action="sayHello">你好</button>
-            <button class="secondary-button danger" type="button" data-game-action="deletePerson">删人物</button>
-          </div>
-          <div class="chat-log">${renderChatLogHtml(person)}</div>
         </div>
       </div>
     </section>
@@ -5849,8 +5911,8 @@ function onGamePanelInput(event) {
     saveActivePhotoSpotMeta({ defer: true, silent: true });
   } else if (name === "roomName") {
     saveSelectedRoom({ defer: true, silent: true });
-  } else if (name === "interiorSpotName" || name === "interiorSpotDescription") {
-    saveSelectedInteriorSpot({ defer: true, silent: true });
+  } else if (name === "interiorSpotName" || name === "interiorSpotDate") {
+    saveSelectedInteriorSpot({ defer: true, silent: true, refresh: true });
   } else if (name === "itemName" || name === "itemDescription") {
     saveSelectedItem({ defer: true, silent: true });
   } else if (name === "personName" || name === "personDescription") {
@@ -5899,6 +5961,9 @@ function handleGameAction(action, button) {
     case "selectInteraction":
       selectNearbyInteraction(button.dataset.interactionKey || "");
       return;
+    case "selectInteriorInteraction":
+      selectInteriorInteraction(button.dataset.interactionKey || "");
+      return;
     case "captureBuildingPhoto":
       els.buildingCameraInput.click();
       return;
@@ -5946,6 +6011,12 @@ function handleGameAction(action, button) {
       return;
     case "selectInteriorSpotPhoto":
       selectInteriorSpotPhoto(button.dataset.photoId || "");
+      return;
+    case "moveInteriorSpotPhotoBackward":
+      moveSelectedInteriorSpotPhoto(-1);
+      return;
+    case "moveInteriorSpotPhotoForward":
+      moveSelectedInteriorSpotPhoto(1);
       return;
     case "captureInteriorSpotPhoto":
       state.activeGameFileTarget = "interiorSpot";
@@ -6524,6 +6595,27 @@ function getSelectedSpotPhotoForEdit(spot) {
   return selectedId ? spot.photos.find((photo) => photo.id === selectedId) || null : null;
 }
 
+function getSelectedInteriorSpotPhotoId(spot) {
+  if (!spot?.photos.length) return "";
+  const index = clamp(spot.activeIndex || 0, 0, spot.photos.length - 1);
+  return spot.photos[index]?.id || spot.photos[0]?.id || "";
+}
+
+function getInteriorSpotPhotoIndexById(spot, photoId) {
+  if (!spot || !photoId) return -1;
+  return spot.photos.findIndex((photo) => photo.id === photoId);
+}
+
+function getSelectedInteriorSpotPhotoForEditId(spot) {
+  const selected = state.selectedInteriorSpotPhotoForEditId;
+  return getInteriorSpotPhotoIndexById(spot, selected) >= 0 ? selected : "";
+}
+
+function getSelectedInteriorSpotPhotoForEdit(spot) {
+  const selectedId = getSelectedInteriorSpotPhotoForEditId(spot);
+  return selectedId ? spot.photos.find((photo) => photo.id === selectedId) || null : null;
+}
+
 function getSelectedBuildingPhotoId(building) {
   if (!building?.photos?.length) return "";
   const selected = state.gameData.selectedBuildingPhotoId;
@@ -6887,8 +6979,30 @@ function enterFromActivePhotoSpot() {
   state.gameData.selectedItemId = "";
   state.gameData.selectedPersonId = "";
   clearMoveTarget();
+  updateNearbyGameContext();
   markGameDirty();
   renderCurrentSchool();
+  renderGamePanel({ force: true });
+  queueDraw();
+}
+
+function selectInteriorInteraction(key) {
+  if (!key) return;
+  const target = state.currentInteriorInteractionTargets.find((item) => item.key === key);
+  if (!target) return;
+  state.selectedInteriorInteractionKey = key;
+  if (target.kind === "interiorSpot") {
+    state.gameData.selectedRoomId = target.room.id;
+    state.gameData.location.roomId = target.room.id;
+    target.room.activeSpotId = target.spot.id;
+  } else if (target.kind === "venue") {
+    state.gameData.selectedRoomId = target.room.id;
+    state.gameData.location.roomId = target.room.id;
+  }
+  state.gameData.selectedItemId = "";
+  state.gameData.selectedPersonId = "";
+  state.selectedInteriorSpotPhotoForEditId = "";
+  markGameDirty({ defer: true });
   renderGamePanel({ force: true });
   queueDraw();
 }
@@ -6926,6 +7040,8 @@ function addRoomToSelectedBuilding() {
   building.updatedAt = new Date().toISOString();
   if (state.gameData.location.kind === "building") {
     moveInteriorPlayerToRoom(room.id);
+  } else {
+    updateNearbyGameContext();
   }
   markGameDirty();
   renderGamePanel({ force: true });
@@ -6987,7 +7103,9 @@ async function addPhotosToSelectedInteriorSpot(files) {
   const photos = await filesToPhotoRecords(files, { kind: "interiorSpot", buildingId: state.gameData.location.buildingId, roomId: room.id, spotId: spot.id });
   for (const photo of photos) spot.photos.push(photo);
   spot.activeIndex = Math.max(0, spot.photos.length - 1);
+  state.selectedInteriorSpotPhotoForEditId = "";
   spot.updatedAt = new Date().toISOString();
+  setGameNotice(`已添加 ${photos.length} 张照片`);
   markGameDirty();
   renderGamePanel({ force: true });
   queueDraw();
@@ -7039,6 +7157,15 @@ function addInteriorSpotToSelectedRoom() {
   const building = getSelectedBuildingMemory();
   if (!room || !building) return;
   const player = getInteriorPlayer(building);
+  const existing = getInteriorSpotAtPoint(player, building);
+  if (existing) {
+    setGameNotice("距离现有拍照点过近");
+    state.selectedInteriorInteractionKey = `interiorSpot:${existing.room.id}:${existing.spot.id}`;
+    existing.room.activeSpotId = existing.spot.id;
+    renderGamePanel({ force: true });
+    queueDraw();
+    return;
+  }
   const now = new Date().toISOString();
   const spot = normalizeInteriorSpot({
     id: createId("room-spot"),
@@ -7052,6 +7179,10 @@ function addInteriorSpotToSelectedRoom() {
   room.spots.push(spot);
   room.activeSpotId = spot.id;
   room.updatedAt = now;
+  state.selectedInteriorInteractionKey = `interiorSpot:${room.id}:${spot.id}`;
+  state.defaultInteriorSpotInteractionKey = state.selectedInteriorInteractionKey;
+  updateNearbyGameContext();
+  setGameNotice(`${getInteriorSpotDisplayName(spot, room.spots.length - 1)} 已建立`);
   markGameDirty();
   renderGamePanel({ force: true });
   queueDraw();
@@ -7075,11 +7206,18 @@ function saveSelectedInteriorSpot(options = {}) {
   spot.name = els.gamePanel.querySelector('[data-game-field="interiorSpotName"]')?.value?.trim() || "";
   const kind = els.gamePanel.querySelector('[data-game-field="interiorSpotKind"]')?.value || spot.kind || "照片";
   spot.kind = INTERIOR_SPOT_KINDS.includes(kind) ? kind : "照片";
-  spot.description = els.gamePanel.querySelector('[data-game-field="interiorSpotDescription"]')?.value?.trim() || "";
+  const dateValue = els.gamePanel.querySelector('[data-game-field="interiorSpotDate"]')?.value || "";
+  const selectedPhoto = getSelectedInteriorSpotPhotoForEdit(spot);
+  if (selectedPhoto) {
+    selectedPhoto.capturedAt = dateInputValueToIso(dateValue, selectedPhoto.capturedAt || selectedPhoto.createdAt || "");
+  } else {
+    spot.capturedAt = dateInputValueToIso(dateValue, spot.capturedAt || spot.createdAt || "");
+  }
   spot.updatedAt = new Date().toISOString();
   room.updatedAt = spot.updatedAt;
+  updateNearbyGameContext();
   markGameDirty(options.defer ? { defer: true } : {});
-  if (!options.silent) renderGamePanel({ force: true });
+  if (!options.silent || options.refresh) renderGamePanel({ force: true });
   queueDraw();
 }
 
@@ -7089,7 +7227,28 @@ function selectInteriorSpotPhoto(photoId) {
   const index = spot.photos.findIndex((photo) => photo.id === photoId);
   if (index < 0) return;
   spot.activeIndex = index;
+  state.selectedInteriorSpotPhotoForEditId = state.selectedInteriorSpotPhotoForEditId === photoId ? "" : photoId;
   markGameDirty({ defer: true });
+  renderGamePanel({ force: true });
+  queueDraw();
+}
+
+function moveSelectedInteriorSpotPhoto(direction) {
+  const room = getSelectedRoom();
+  const spot = getSelectedInteriorSpot(room);
+  if (!room || !spot || spot.photos.length < 2) return;
+  const selectedId = getSelectedInteriorSpotPhotoForEditId(spot);
+  const from = getInteriorSpotPhotoIndexById(spot, selectedId);
+  if (from < 0) return;
+  const to = clamp(from + Math.sign(direction || 1), 0, spot.photos.length - 1);
+  if (from === to) return;
+  const [photo] = spot.photos.splice(from, 1);
+  spot.photos.splice(to, 0, photo);
+  spot.activeIndex = to;
+  state.selectedInteriorSpotPhotoForEditId = photo.id;
+  spot.updatedAt = new Date().toISOString();
+  room.updatedAt = spot.updatedAt;
+  markGameDirty();
   renderGamePanel({ force: true });
   queueDraw();
 }
@@ -7098,14 +7257,21 @@ function deleteSelectedInteriorSpotPhotoOrSpot() {
   const room = getSelectedRoom();
   const spot = getSelectedInteriorSpot(room);
   if (!room || !spot) return;
-  if (spot.photos.length) {
-    const index = clamp(spot.activeIndex || 0, 0, spot.photos.length - 1);
+  const selectedPhotoId = getSelectedInteriorSpotPhotoForEditId(spot);
+  if (selectedPhotoId) {
+    const index = spot.photos.findIndex((photo) => photo.id === selectedPhotoId);
+    if (index < 0) return;
     spot.photos.splice(index, 1);
+    state.selectedInteriorSpotPhotoForEditId = "";
     spot.activeIndex = clamp(index, 0, Math.max(0, spot.photos.length - 1));
     spot.updatedAt = new Date().toISOString();
+  } else if (spot.photos.length) {
+    return;
   } else {
     room.spots = room.spots.filter((entry) => entry.id !== spot.id);
     room.activeSpotId = room.spots[0]?.id || "";
+    state.selectedInteriorInteractionKey = room.spots[0] ? `interiorSpot:${room.id}:${room.spots[0].id}` : `venue:${room.id}`;
+    state.defaultInteriorSpotInteractionKey = "";
   }
   room.updatedAt = new Date().toISOString();
   markGameDirty();
@@ -8789,6 +8955,8 @@ function setInteriorMoveTargetFromClick(canvasPoint) {
       state.gameData.location.roomId = cell.room.id;
       state.gameData.selectedItemId = "";
       state.gameData.selectedPersonId = "";
+      state.selectedInteriorInteractionKey = `venue:${cell.room.id}`;
+      updateNearbyGameContext();
       renderGamePanel({ force: true });
     }
   }
@@ -10957,7 +11125,8 @@ function drawInteriorSpotMarkers(ctx, room, x, y, width, height, active) {
   const roomY = roomIndex?.y || 0;
   const roomW = roomIndex?.width || INTERIOR_MAP_WIDTH;
   const roomH = roomIndex?.height || INTERIOR_MAP_HEIGHT;
-  const marker = Math.max(28, Math.min(64, Math.min(width, height) / 7));
+  const marker = Math.max(12, Math.min(28, INTERIOR_PLAYER_RADIUS * Math.min(width / Math.max(1, roomW), height / Math.max(1, roomH)) * 0.95));
+  const showAnnotations = showMapAnnotations();
   ctx.save();
   for (const [index, spot] of spots.entries()) {
     const localX = clamp((spot.x - roomX) / Math.max(1, roomW), 0.05, 0.95);
@@ -10965,32 +11134,33 @@ function drawInteriorSpotMarkers(ctx, room, x, y, width, height, active) {
     const px = x + localX * width;
     const py = y + localY * height;
     const isSelected = spot.id === selected?.id;
+    if (!isSelected && !showAnnotations) continue;
     const image = getRepresentativePhotoImage(spot);
     ctx.beginPath();
-    ctx.roundRect(px - marker / 2, py - marker / 2, marker, marker, 7);
-    ctx.fillStyle = isSelected ? "rgba(255, 250, 240, 0.95)" : "rgba(255, 250, 240, 0.82)";
+    ctx.arc(px, py, marker, 0, Math.PI * 2);
+    ctx.fillStyle = isSelected ? "rgba(226, 118, 77, 0.96)" : "rgba(255, 250, 240, 0.90)";
     ctx.fill();
     if (image && isPhotoImageReady(image)) {
       ctx.save();
       ctx.beginPath();
-      ctx.roundRect(px - marker / 2, py - marker / 2, marker, marker, 7);
+      ctx.arc(px, py, marker, 0, Math.PI * 2);
       ctx.clip();
-      drawCoverImage(ctx, image, px - marker / 2, py - marker / 2, marker, marker);
+      drawCoverImage(ctx, image, px - marker, py - marker, marker * 2, marker * 2);
       ctx.restore();
     } else {
-      ctx.fillStyle = spot.kind === "人物" ? "#8b5f8f" : spot.kind === "物品" ? "#a06b2b" : "#1f554e";
-      ctx.font = `900 ${Math.max(11, marker * 0.36)}px Microsoft YaHei, sans-serif`;
+      ctx.fillStyle = isSelected ? "#fffaf0" : "#1f554e";
+      ctx.font = `900 ${Math.max(10, marker * 0.7)}px Microsoft YaHei, sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText((spot.kind || "照").slice(0, 1), px, py + 0.5);
     }
-    ctx.strokeStyle = isSelected ? "#1f554e" : "rgba(31, 85, 78, 0.42)";
-    ctx.lineWidth = isSelected ? 2.5 : 1.4;
+    ctx.strokeStyle = isSelected ? "#1f554e" : "rgba(31, 85, 78, 0.86)";
+    ctx.lineWidth = isSelected ? 2.8 : 1.8;
     ctx.beginPath();
-    ctx.roundRect(px - marker / 2, py - marker / 2, marker, marker, 7);
+    ctx.arc(px, py, marker, 0, Math.PI * 2);
     ctx.stroke();
-    if (active && showMapAnnotations()) {
-      drawGameLabel(ctx, getInteriorSpotDisplayName(spot, index), px, py + marker / 2 + 14, {
+    if (showAnnotations) {
+      drawGameLabel(ctx, getInteriorSpotDisplayName(spot, index), px, py + marker + 14, {
         selected: isSelected,
         maxWidth: 140,
         height: 22,
@@ -13357,6 +13527,8 @@ function getGameTextState() {
   const venueRule = getVenueRule(room, building);
   const exploration = getExplorationProgress();
   const interiorPlayer = state.gameData.location.kind === "building" && building ? getInteriorPlayer(building) : null;
+  const interiorTarget = getSelectedInteriorInteractionTarget();
+  const interiorSpot = interiorTarget?.kind === "interiorSpot" ? interiorTarget.spot : null;
   return {
     mode: state.editorEnabled ? "editor" : state.gameData.location.kind,
     coordinateSystem: state.gameData.location.kind === "building"
@@ -13403,6 +13575,8 @@ function getGameTextState() {
     showPeopleMarkers: state.gameData.settings.showPeopleMarkers,
     showExplorationGrid: state.gameData.settings.showExplorationGrid === true,
     nearbyTargets: state.currentNearbyInteractionTargets.map((target) => target.key),
+    interiorTargets: state.currentInteriorInteractionTargets.map((target) => target.key),
+    selectedInteriorTargetKey: state.selectedInteriorInteractionKey || "",
     nearbyBuildingIds: [...state.currentNearbyBuildingIds],
     selectedBuildingId: state.gameData.selectedBuildingId || "",
     selectedBuilding: building ? {
@@ -13425,6 +13599,14 @@ function getGameTextState() {
       photoCount: room.photos.length,
       itemCount: room.items.length,
       personCount: room.people.length
+    } : null,
+    selectedInteriorSpot: interiorSpot ? {
+      id: interiorSpot.id,
+      name: getInteriorSpotDisplayName(interiorSpot, room?.spots?.findIndex((spot) => spot.id === interiorSpot.id) ?? 0),
+      kind: interiorSpot.kind || "照片",
+      photoCount: interiorSpot.photos.length,
+      selectedPhotoId: getSelectedInteriorSpotPhotoId(interiorSpot),
+      selectedPhotoForEditId: getSelectedInteriorSpotPhotoForEditId(interiorSpot)
     } : null,
     selectedItem: item ? {
       id: item.id,
