@@ -8985,8 +8985,6 @@ function handleGameCanvasClick(canvasPoint) {
 function setInteriorMoveTargetFromClick(canvasPoint) {
   if (!canvasPoint) return;
   const target = screenToInterior(canvasPoint.x, canvasPoint.y);
-  const spotTarget = getInteriorSpotAtPoint(target);
-  if (selectInteriorSpotTarget(spotTarget)) return;
   setMoveTarget(target);
   state.movementKeys.clear();
   const building = getSelectedBuildingMemory();
