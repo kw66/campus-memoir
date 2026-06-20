@@ -5,53 +5,64 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>校园回忆录</title>
     <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260618a" />
-    <link rel="stylesheet" href="./src/styles.css?v=20260619v" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260620c" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div class="topbar-left">
           <button class="school-button" id="schoolButton" type="button">选择学校</button>
-          <button class="secondary-button compact" id="gameInfoButton" type="button" aria-expanded="false">游戏信息</button>
+          <button class="secondary-button compact" id="gameInfoButton" type="button" aria-expanded="false">信息与设置</button>
         </div>
         <div class="topbar-actions">
           <button class="primary-button compact" id="editorToggleButton" type="button">进入地图编辑</button>
         </div>
       </header>
 
-      <section class="game-info-panel" id="gameInfoPanel" aria-label="游戏信息" hidden>
-        <div class="game-info-head">
-          <div class="game-info-tabs" role="tablist" aria-label="游戏信息分类">
-            <button class="game-info-tab active" type="button">作者</button>
+      <section class="game-info-panel" id="gameInfoPanel" aria-label="信息与设置" aria-modal="true" role="dialog" hidden>
+        <div class="game-info-dialog">
+          <div class="game-info-head">
+            <strong>信息与设置</strong>
+            <button class="secondary-button compact" id="gameInfoCloseButton" type="button">收起</button>
           </div>
-          <button class="secondary-button compact" id="gameInfoCloseButton" type="button">收起</button>
-        </div>
-        <div class="game-info-grid">
-          <article class="game-info-card author-card">
-            <p class="author-inline"><strong>作者</strong><a href="https://xhslink.com/m/A2DFslJF4mb" target="_blank" rel="noreferrer">落星峦</a></p>
-            <p class="author-inline"><a href="https://kw66.github.io/games/" target="_blank" rel="noreferrer">作者游戏合集</a></p>
-          </article>
-          <article class="game-info-card project-card">
-            <p><a href="https://github.com/kw66/campus-memoir" target="_blank" rel="noreferrer"><span>项目地址</span><em>（求个star⭐）</em></a></p>
-            <p><a href="http://xhslink.com/o/4Eu9wpXB70J" target="_blank" rel="noreferrer"><span>小红书交流帖</span><em>（求点赞❤️）</em></a></p>
-          </article>
-          <article class="game-info-card album-card">
-            <div class="album-card-head">
-              <h2>相册库</h2>
-              <span class="album-status" id="albumStatus">检测中</span>
+          <div class="game-info-tabs" role="tablist" aria-label="信息与设置分类">
+            <button class="game-info-tab active" id="gameInfoTabAuthor" data-game-info-tab="author" role="tab" aria-controls="gameInfoPageAuthor" aria-selected="true" type="button">作者</button>
+            <button class="game-info-tab" id="gameInfoTabInfo" data-game-info-tab="info" role="tab" aria-controls="gameInfoPageInfo" aria-selected="false" type="button">信息</button>
+            <button class="game-info-tab" id="gameInfoTabStats" data-game-info-tab="stats" role="tab" aria-controls="gameInfoPageStats" aria-selected="false" type="button">统计</button>
+          </div>
+          <div class="game-info-content">
+            <div class="game-info-page author-page" id="gameInfoPageAuthor" data-game-info-page="author" role="tabpanel" aria-labelledby="gameInfoTabAuthor">
+              <article class="game-info-card author-card">
+                <p class="author-inline"><strong>作者</strong><a href="https://xhslink.com/m/A2DFslJF4mb" target="_blank" rel="noreferrer">落星峦</a></p>
+                <p class="author-inline"><a href="https://kw66.github.io/games/" target="_blank" rel="noreferrer">作者游戏合集</a></p>
+              </article>
             </div>
-            <p id="albumDescription">原图可保存到本机文件夹，游戏内只保留预览图。</p>
-            <div class="album-actions">
-              <button class="secondary-button compact" id="albumChooseButton" type="button">设置相册</button>
-              <button class="secondary-button compact" id="albumReconnectButton" type="button">重连</button>
-              <button class="secondary-button compact danger" id="albumForgetButton" type="button">关闭</button>
+            <div class="game-info-page info-page" id="gameInfoPageInfo" data-game-info-page="info" role="tabpanel" aria-labelledby="gameInfoTabInfo" hidden>
+              <article class="game-info-card project-card">
+                <p><a href="https://github.com/kw66/campus-memoir" target="_blank" rel="noreferrer"><span>项目地址</span><em>（求个star⭐）</em></a></p>
+                <p><a href="http://xhslink.com/o/4Eu9wpXB70J" target="_blank" rel="noreferrer"><span>小红书交流帖</span><em>（求点赞❤️）</em></a></p>
+              </article>
+              <article class="game-info-card album-card">
+                <div class="album-card-head">
+                  <h2>相册库</h2>
+                  <span class="album-status" id="albumStatus">检测中</span>
+                </div>
+                <p id="albumDescription">原图可保存到本机文件夹，游戏内只保留预览图。</p>
+                <div class="album-actions">
+                  <button class="secondary-button compact" id="albumChooseButton" type="button">设置相册</button>
+                  <button class="secondary-button compact" id="albumReconnectButton" type="button">重连</button>
+                  <button class="secondary-button compact danger" id="albumForgetButton" type="button">关闭</button>
+                </div>
+              </article>
             </div>
-          </article>
-          <article class="game-info-card stats-card">
-            <h2>校园足迹</h2>
-            <div class="stats-panel" id="globalStatsPanel" aria-live="polite"></div>
-            <p class="stats-note" id="globalStatsStatus">正在读取校园足迹...</p>
-          </article>
+            <div class="game-info-page stats-page" id="gameInfoPageStats" data-game-info-page="stats" role="tabpanel" aria-labelledby="gameInfoTabStats" hidden>
+              <article class="game-info-card stats-card">
+                <h2>校园足迹</h2>
+                <div class="stats-panel" id="globalStatsPanel" aria-live="polite"></div>
+                <p class="stats-note" id="globalStatsStatus">正在读取校园足迹...</p>
+              </article>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -385,6 +396,6 @@
       </form>
     </dialog>
 
-    <script src="./src/app.js?v=20260620b"></script>
+    <script src="./src/app.js?v=20260620c"></script>
   </body>
 </html>

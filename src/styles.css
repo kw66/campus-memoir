@@ -162,15 +162,40 @@ button:disabled {
   pointer-events: none;
 }
 
+body.game-info-open {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 .game-info-panel {
-  width: min(980px, 100%);
-  justify-self: end;
-  min-height: 0;
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 10px;
+  overflow: hidden;
+  background: rgba(29, 42, 36, 0.28);
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+.game-info-dialog {
+  width: min(560px, calc(100vw - 20px));
+  max-height: min(680px, calc(100dvh - 20px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: color-mix(in srgb, var(--accent-strong), #fffaf0 88%);
   box-shadow: var(--shadow);
+  overflow: hidden;
 }
 
 .game-info-head {
@@ -178,22 +203,47 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+}
+
+.game-info-head strong {
+  color: var(--accent-strong);
+  font-size: 16px;
 }
 
 .game-info-tabs {
-  display: flex;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .game-info-tab {
   min-height: 34px;
-  padding: 0 18px;
+  padding: 0 10px;
   border: 1px solid var(--accent);
   border-radius: 7px;
+  background: #fffdf6;
+  color: var(--accent-strong);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.game-info-tab.active {
   background: var(--accent);
   color: #fffaf0;
-  font-weight: 900;
+}
+
+.game-info-content {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  padding-right: 2px;
+}
+
+.game-info-page {
+  display: grid;
+  gap: 10px;
 }
 
 .game-info-grid {
@@ -306,7 +356,7 @@ button:disabled {
 }
 
 .stats-card {
-  grid-column: 1 / -1;
+  grid-column: auto;
 }
 
 .stats-card h2,
@@ -2040,9 +2090,17 @@ textarea.game-input {
     white-space: nowrap;
   }
 
-  .game-info-grid,
   .stat-grid {
     grid-template-columns: 1fr;
+  }
+
+  .game-info-panel {
+    padding: 8px;
+  }
+
+  .game-info-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
   }
 
   .game-layout {

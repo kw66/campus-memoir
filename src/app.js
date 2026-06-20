@@ -427,6 +427,8 @@ const state = {
   explorationDirty: true,
   globalStats: { totalPv: 0, todayPv: 0, totalUv: 0, todayUv: 0 },
   globalStatsStatus: "正在读取校园足迹...",
+  gameInfoTab: "author",
+  gameInfoScrollY: 0,
   downloadJobs: new Map(),
   album: {
     supported: typeof window.showDirectoryPicker === "function",
@@ -557,6 +559,8 @@ const els = {
   gameInfoButton: document.querySelector("#gameInfoButton"),
   gameInfoPanel: document.querySelector("#gameInfoPanel"),
   gameInfoCloseButton: document.querySelector("#gameInfoCloseButton"),
+  gameInfoTabs: document.querySelectorAll("[data-game-info-tab]"),
+  gameInfoPages: document.querySelectorAll("[data-game-info-page]"),
   albumStatus: document.querySelector("#albumStatus"),
   albumDescription: document.querySelector("#albumDescription"),
   albumChooseButton: document.querySelector("#albumChooseButton"),
@@ -879,6 +883,22 @@ function bindEvents() {
 
   els.gameInfoCloseButton.addEventListener("click", () => {
     toggleGameInfoPanel(false);
+  });
+
+  els.gameInfoPanel.addEventListener("click", (event) => {
+    if (event.target === els.gameInfoPanel) toggleGameInfoPanel(false);
+  });
+
+  for (const button of els.gameInfoTabs) {
+    button.addEventListener("click", () => {
+      setGameInfoTab(button.dataset.gameInfoTab || "author");
+    });
+  }
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !els.gameInfoPanel.hidden) {
+      toggleGameInfoPanel(false);
+    }
   });
 
   els.albumChooseButton.addEventListener("click", () => {
@@ -5746,11 +5766,12 @@ async function createPhotoFromFile(file, context = {}) {
 async function canUseAlbumFolder() {
   if (!state.album.supported || !state.album.handle) return false;
   if (state.album.enabled) return true;
-  const permission = await queryAlbumPermission(state.album.handle);
+  const permission = await ensureAlbumPermission(state.album.handle);
   state.album.permission = permission;
   state.album.enabled = permission === "granted";
   state.album.status = state.album.enabled ? "connected" : "needs-permission";
   state.album.message = state.album.enabled ? "原图会保存到本机相册库。" : "相册库需要重新授权，本次使用浏览器存储。";
+  if (state.album.enabled) await saveAlbumSettings();
   renderAlbumStatus();
   return state.album.enabled;
 }
@@ -6709,13 +6730,45 @@ function setEditorNotice(text, tone = "info") {
   renderEditorState();
 }
 
+function setGameInfoTab(tab) {
+  const nextTab = ["author", "info", "stats"].includes(tab) ? tab : "author";
+  state.gameInfoTab = nextTab;
+  renderGameInfoTabs();
+  if (nextTab === "info") renderAlbumStatus();
+  if (nextTab === "stats") void refreshStatsPanel();
+}
+
+function renderGameInfoTabs() {
+  for (const button of els.gameInfoTabs) {
+    const active = button.dataset.gameInfoTab === state.gameInfoTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  }
+  for (const page of els.gameInfoPages) {
+    page.hidden = page.dataset.gameInfoPage !== state.gameInfoTab;
+  }
+}
+
 function toggleGameInfoPanel(forceOpen = null) {
+  const wasOpen = !els.gameInfoPanel.hidden;
   const open = forceOpen === null ? els.gameInfoPanel.hidden : Boolean(forceOpen);
+  if (open && !wasOpen) {
+    state.gameInfoScrollY = window.scrollY || 0;
+    document.body.style.top = `-${state.gameInfoScrollY}px`;
+  }
   els.gameInfoPanel.hidden = !open;
   els.gameInfoButton.setAttribute("aria-expanded", String(open));
+  document.body.classList.toggle("game-info-open", open);
+  if (!open && wasOpen) {
+    const scrollY = state.gameInfoScrollY || 0;
+    document.body.style.top = "";
+    window.scrollTo(0, scrollY);
+  }
   if (open) {
-    renderAlbumStatus();
-    void refreshStatsPanel();
+    renderGameInfoTabs();
+    if (state.gameInfoTab === "info") renderAlbumStatus();
+    if (state.gameInfoTab === "stats") void refreshStatsPanel();
   }
 }
 
@@ -11846,6 +11899,22 @@ async function requestAlbumPermission(handle) {
   }
 }
 
+async function ensureAlbumPermission(handle) {
+  const current = await queryAlbumPermission(handle);
+  if (current === "granted") return current;
+  return requestAlbumPermission(handle);
+}
+
+async function requestPersistentStorage() {
+  if (!navigator.storage || typeof navigator.storage.persist !== "function") return false;
+  try {
+    return await navigator.storage.persist();
+  } catch (error) {
+    console.warn("持久化存储申请失败:", error);
+    return false;
+  }
+}
+
 async function chooseAlbumFolder() {
   if (!isAlbumModeSupported()) {
     state.album.supported = false;
@@ -11857,6 +11926,7 @@ async function chooseAlbumFolder() {
   try {
     const handle = await window.showDirectoryPicker({ mode: "readwrite" });
     const permission = await requestAlbumPermission(handle);
+    const persisted = permission === "granted" ? await requestPersistentStorage() : false;
     state.album = {
       ...state.album,
       supported: true,
@@ -11865,7 +11935,9 @@ async function chooseAlbumFolder() {
       permission,
       rootName: handle.name || "相册库",
       status: permission === "granted" ? "connected" : "needs-permission",
-      message: permission === "granted" ? "相册库已连接，原图会保存到本机文件夹。" : "没有获得写入权限，暂时使用浏览器存储。"
+      message: permission === "granted"
+        ? (persisted ? "相册库已连接，原图会保存到本机文件夹。" : "相册库已连接，浏览器仍可能要求重新授权。")
+        : "没有获得写入权限，暂时使用浏览器存储。"
     };
     await saveAlbumSettings();
   } catch (error) {
@@ -11883,10 +11955,13 @@ async function reconnectAlbumFolder() {
     return;
   }
   const permission = await requestAlbumPermission(state.album.handle);
+  const persisted = permission === "granted" ? await requestPersistentStorage() : false;
   state.album.enabled = permission === "granted";
   state.album.permission = permission;
   state.album.status = permission === "granted" ? "connected" : "needs-permission";
-  state.album.message = permission === "granted" ? "相册库已重新授权。" : "仍未获得相册库写入权限。";
+  state.album.message = permission === "granted"
+    ? (persisted ? "相册库已重新授权。" : "相册库已重新授权，浏览器仍可能要求再次确认。")
+    : "仍未获得相册库写入权限。";
   await saveAlbumSettings();
   renderAlbumStatus();
 }
