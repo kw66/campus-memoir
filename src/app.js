@@ -5846,7 +5846,7 @@ function renderCampusInteractionHtml(region, building) {
           <input class="game-input" data-game-field="buildingPhotoDate" type="date" value="${escapeAttr(getBuildingPanelDateValue(building))}">
         </div>
         <div class="game-actions dense photo-actions">
-          ${showEntranceTools ? `<button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>` : ""}
+          ${showEntranceTools ? `<button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}" ${entranceCandidate.canLink ? "" : "disabled"}>设入口</button>` : ""}
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
           <button class="secondary-button" type="button" data-game-action="captureBuildingPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
