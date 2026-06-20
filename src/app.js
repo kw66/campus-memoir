@@ -881,6 +881,7 @@ async function init() {
       findMoveTargetNear,
       findStartableMoveTarget,
       resolvePlayerMove,
+      getInteriorCanvasRect,
       screenToInterior,
       getInteriorRoomLayout,
       screenToImage,
@@ -4739,14 +4740,13 @@ function moveInteriorPlayerToRoom(roomId) {
 }
 
 function getInteriorCanvasRect() {
-  const margin = 18;
-  const width = Math.max(1, state.canvasSize.width - margin * 2);
-  const height = Math.max(1, state.canvasSize.height - margin * 2);
+  const width = Math.max(1, state.canvasSize.width);
+  const height = Math.max(1, state.canvasSize.height);
   const scaleX = width / INTERIOR_MAP_WIDTH;
   const scaleY = height / INTERIOR_MAP_HEIGHT;
   return {
-    x: margin,
-    y: margin,
+    x: 0,
+    y: 0,
     width,
     height,
     scale: Math.min(scaleX, scaleY),
@@ -5437,7 +5437,6 @@ function renderGamePanel(options = {}) {
   els.gamePanel.hidden = !visible;
   els.mapToolbar.hidden = !visible || insideBuilding;
   els.mapActions.hidden = !visible;
-  els.mapActions.classList.toggle("inside-building-actions", visible && insideBuilding);
   els.zoomReadout.hidden = visible && insideBuilding;
   els.currentSchool.hidden = false;
   els.explorationProgress.hidden = !visible || insideBuilding;
