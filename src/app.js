@@ -2294,7 +2294,7 @@ function renderDownloadCatalog() {
     const title = document.createElement("strong");
     title.textContent = item.name;
     const meta = document.createElement("span");
-    meta.textContent = `GitHub Release 官方包 · ${item.version || "最新"} · ${item.sizeLabel || "文件大小未知"}`;
+    meta.textContent = `内置地图包 · ${item.version || "最新"} · ${item.sizeLabel || "文件大小未知"}`;
     const desc = document.createElement("span");
     desc.textContent = item.description || "点击后下载并导入到本地浏览器。";
     const progress = document.createElement("div");
