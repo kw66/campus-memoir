@@ -12,6 +12,12 @@ const EXTRA_IMAGES_STORE = "extraImages";
 const GAME_DATA_STORE = "gameData";
 const APP_SETTINGS_STORE = "appSettings";
 const ALBUM_SETTINGS_KEY = "album";
+const LIBRARY_DIR_NAME = "campus-memoir";
+const LIBRARY_INDEX_FILE = "library.json";
+const LIBRARY_SCHOOLS_DIR = "schools";
+const LIBRARY_MANIFEST_FILE = "school.json";
+const LIBRARY_MAP_FILE = "map-image";
+const LIBRARY_SYNC_DEBOUNCE_MS = 900;
 const STRUCTURE_BRUSH_SIZE = 24;
 const LINEAR_STRUCTURE_WIDTH = 12;
 const DEFAULT_PLAYER_RADIUS = 26;
@@ -437,7 +443,14 @@ const state = {
     permission: "unknown",
     rootName: "",
     status: "checking",
-    message: "正在检测相册库..."
+    message: "正在检测资料库...",
+    syncStatus: "idle",
+    syncMessage: "",
+    syncUpdatedAt: "",
+    syncTimer: null,
+    syncRunning: false,
+    pendingSync: false,
+    suspendSync: false
   },
   photoUrlCache: new Map(),
   photoImageCache: new Map(),
@@ -565,6 +578,8 @@ const els = {
   albumDescription: document.querySelector("#albumDescription"),
   albumChooseButton: document.querySelector("#albumChooseButton"),
   albumReconnectButton: document.querySelector("#albumReconnectButton"),
+  librarySyncButton: document.querySelector("#librarySyncButton"),
+  libraryRestoreButton: document.querySelector("#libraryRestoreButton"),
   albumForgetButton: document.querySelector("#albumForgetButton"),
   globalStatsPanel: document.querySelector("#globalStatsPanel"),
   globalStatsStatus: document.querySelector("#globalStatsStatus"),
@@ -755,6 +770,9 @@ async function init() {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = "#c8c0ad";
         ctx.fillRect(80, 70, 440, 260);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+        const file = new File([blob], "debug-map.png", { type: "image/png" });
+        school.mapMeta = await putMapImage(id, file);
         state.mapImage = await loadImageElement(canvas.toDataURL("image/png"));
         state.mapNaturalSize = { width: 600, height: 400 };
         rebuildMapAlphaMask();
@@ -774,10 +792,13 @@ async function init() {
           permission: "granted",
           rootName: handle?.name || "test-album",
           status: "connected",
-          message: "测试相册库已连接。"
+          message: "测试资料库已连接。"
         };
         renderAlbumStatus();
       },
+      syncLibraryFromBrowser,
+      restoreSchoolsFromLibrary,
+      restoreMissingSchoolsFromLibrary,
       getCurrentAreaDraft,
       createParallelogramAreaFromThreePoints,
       normalizeArea,
@@ -907,6 +928,14 @@ function bindEvents() {
 
   els.albumReconnectButton.addEventListener("click", () => {
     void reconnectAlbumFolder();
+  });
+
+  els.librarySyncButton.addEventListener("click", () => {
+    void syncLibraryFromBrowser({ manual: true });
+  });
+
+  els.libraryRestoreButton.addEventListener("click", () => {
+    void restoreSchoolsFromLibrary({ confirm: true });
   });
 
   els.albumForgetButton.addEventListener("click", () => {
@@ -1991,7 +2020,8 @@ function normalizeSchools(schools) {
       structureName: typeof school.structureName === "string" ? school.structureName : "",
       extraImageCount: Number.isFinite(Number(school.extraImageCount)) ? Number(school.extraImageCount) : 0,
       peopleFileName: typeof school.peopleFileName === "string" ? school.peopleFileName : "",
-      createdAt: typeof school.createdAt === "string" ? school.createdAt : new Date().toISOString()
+      createdAt: typeof school.createdAt === "string" ? school.createdAt : new Date().toISOString(),
+      libraryUpdatedAt: typeof school.libraryUpdatedAt === "string" ? school.libraryUpdatedAt : ""
     }));
 }
 
@@ -2078,6 +2108,154 @@ function readImageNaturalSize(file) {
 
 function saveSchools() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.schools));
+  scheduleLibrarySync();
+}
+
+function scheduleLibrarySync(options = {}) {
+  if (state.album.suspendSync) return;
+  if (!state.album.enabled || !state.album.handle) return;
+  state.album.pendingSync = true;
+  window.clearTimeout(state.album.syncTimer);
+  const delay = options.immediate ? 0 : LIBRARY_SYNC_DEBOUNCE_MS;
+  state.album.syncTimer = window.setTimeout(() => {
+    void syncLibraryFromBrowser({ reason: "auto" });
+  }, delay);
+}
+
+function setLibrarySyncState(status, message = "") {
+  state.album.syncStatus = status;
+  state.album.syncMessage = message;
+  if (status === "synced") state.album.syncUpdatedAt = new Date().toISOString();
+  renderAlbumStatus();
+}
+
+function clearLibrarySyncQueue() {
+  window.clearTimeout(state.album.syncTimer);
+  state.album.syncTimer = null;
+  state.album.pendingSync = false;
+}
+
+async function syncLibraryFromBrowser(options = {}) {
+  if (!state.album.supported) {
+    setLibrarySyncState("error", "当前浏览器不支持资料库。");
+    return;
+  }
+  clearLibrarySyncQueue();
+  const permission = await ensureAlbumPermission(state.album.handle);
+  state.album.permission = permission;
+  state.album.enabled = permission === "granted";
+  state.album.status = state.album.enabled ? "connected" : "needs-permission";
+  if (!state.album.enabled) {
+    setLibrarySyncState("error", "资料库需要重新授权。");
+    return;
+  }
+  if (state.album.syncRunning) {
+    state.album.pendingSync = true;
+    return;
+  }
+  state.album.syncRunning = true;
+  state.album.pendingSync = false;
+  setLibrarySyncState("syncing", "正在写入资料库...");
+  try {
+    const appDir = await getLibraryRootDirectory(state.album.handle);
+    const schools = normalizeSchools(state.schools);
+    for (const school of schools) await writeSchoolToLibrary(appDir, school);
+    state.schools = schools;
+    await writeJsonFileToDirectory(appDir, LIBRARY_INDEX_FILE, makeLibraryIndex(state.schools));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.schools));
+    setLibrarySyncState("synced", options.manual ? "已同步到资料库。" : "资料库已更新。");
+  } catch (error) {
+    console.warn("资料库同步失败:", error);
+    setLibrarySyncState("error", "资料库同步失败。");
+  } finally {
+    state.album.syncRunning = false;
+    if (state.album.pendingSync) scheduleLibrarySync({ immediate: true });
+  }
+}
+
+async function restoreSchoolsFromLibrary(options = {}) {
+  if (!state.album.handle) {
+    await chooseAlbumFolder();
+    return;
+  }
+  const permission = await ensureAlbumPermission(state.album.handle);
+  state.album.permission = permission;
+  state.album.enabled = permission === "granted";
+  state.album.status = state.album.enabled ? "connected" : "needs-permission";
+  if (!state.album.enabled) {
+    setLibrarySyncState("error", "资料库需要重新授权。");
+    return;
+  }
+  if (options.confirm && state.schools.length) {
+    const ok = window.confirm("从资料库恢复会用同 ID 的学校覆盖本机缓存，继续吗？");
+    if (!ok) return;
+  }
+  setLibrarySyncState("syncing", "正在从资料库恢复...");
+  try {
+    const appDir = await getLibraryRootDirectory(state.album.handle, { create: false });
+    const index = await readJsonFileFromDirectory(appDir, LIBRARY_INDEX_FILE);
+    if (!index || index.kind !== "campus-memoir-library") {
+      setLibrarySyncState("error", "资料库里还没有可恢复的索引。");
+      return;
+    }
+    let restored = 0;
+    state.album.suspendSync = true;
+    for (const entry of index.schools || []) {
+      const bundle = await readSchoolManifestFromLibrary(appDir, entry);
+      if (!bundle) continue;
+      const school = await importLibrarySchoolBundle(bundle, { overwrite: true });
+      if (school) restored += 1;
+    }
+    saveSchools();
+    state.album.suspendSync = false;
+    if (!state.selectedSchoolId || !state.schools.some((school) => school.id === state.selectedSchoolId)) {
+      state.selectedSchoolId = state.schools[0]?.id || null;
+      saveCurrentSchoolId(state.selectedSchoolId);
+    }
+    await renderAll({ fit: true });
+    renderSchoolDialogPanels();
+    clearLibrarySyncQueue();
+    setLibrarySyncState("synced", restored ? `已从资料库恢复 ${restored} 个校区。` : "资料库里没有校区。");
+  } catch (error) {
+    state.album.suspendSync = false;
+    console.warn("资料库恢复失败:", error);
+    setLibrarySyncState("error", "资料库恢复失败。");
+  }
+}
+
+async function restoreMissingSchoolsFromLibrary() {
+  if (!state.album.handle || !state.album.enabled) return 0;
+  try {
+    const appDir = await getLibraryRootDirectory(state.album.handle, { create: false });
+    const index = await readJsonFileFromDirectory(appDir, LIBRARY_INDEX_FILE);
+    if (!index || index.kind !== "campus-memoir-library") return 0;
+    let imported = 0;
+    state.album.suspendSync = true;
+    for (const entry of index.schools || []) {
+      const id = entry?.id || "";
+      if (id && state.schools.some((school) => school.id === id)) continue;
+      const bundle = await readSchoolManifestFromLibrary(appDir, entry);
+      const school = await importLibrarySchoolBundle(bundle, { overwrite: false });
+      if (school) imported += 1;
+    }
+    if (imported) {
+      saveSchools();
+      state.album.suspendSync = false;
+      renderSchoolDialogPanels();
+      if (!state.selectedSchoolId) {
+        state.selectedSchoolId = state.schools[0]?.id || null;
+        saveCurrentSchoolId(state.selectedSchoolId);
+        await renderAll({ fit: true });
+      }
+      clearLibrarySyncQueue();
+    }
+    state.album.suspendSync = false;
+    return imported;
+  } catch (error) {
+    state.album.suspendSync = false;
+    if (error?.name !== "NotFoundError") console.warn("资料库缺失学校恢复失败:", error);
+    return 0;
+  }
 }
 
 function loadCurrentSchoolId(schools) {
@@ -5726,10 +5904,10 @@ async function createPhotoFromFile(file, context = {}) {
     try {
       original = await saveOriginalPhotoToAlbum(file, photoId, context);
     } catch (error) {
-      console.warn("保存原图到相册库失败，改用浏览器存储:", error);
+      console.warn("保存原图到资料库失败，改用浏览器存储:", error);
       state.album.enabled = false;
       state.album.status = "needs-permission";
-      state.album.message = "相册库写入失败，本次照片已存入浏览器。";
+      state.album.message = "资料库写入失败，本次照片已存入浏览器。";
       renderAlbumStatus();
     }
     if (original) {
@@ -5770,7 +5948,7 @@ async function canUseAlbumFolder() {
   state.album.permission = permission;
   state.album.enabled = permission === "granted";
   state.album.status = state.album.enabled ? "connected" : "needs-permission";
-  state.album.message = state.album.enabled ? "原图会保存到本机相册库。" : "相册库需要重新授权，本次使用浏览器存储。";
+  state.album.message = state.album.enabled ? "资料库已连接。" : "资料库需要重新授权，本次使用浏览器存储。";
   if (state.album.enabled) await saveAlbumSettings();
   renderAlbumStatus();
   return state.album.enabled;
@@ -5779,9 +5957,9 @@ async function canUseAlbumFolder() {
 async function saveOriginalPhotoToAlbum(file, photoId, context = {}) {
   const school = getSelectedSchool();
   const root = state.album.handle;
-  const appDir = await getOrCreateDirectory(root, "campus-memoir");
-  const schoolsDir = await getOrCreateDirectory(appDir, "schools");
-  const schoolDirName = safeFileName(school?.name || school?.id || "unknown-school");
+  const appDir = await getLibraryRootDirectory(root);
+  const schoolsDir = await getOrCreateDirectory(appDir, LIBRARY_SCHOOLS_DIR);
+  const schoolDirName = getLibrarySchoolDirName(school);
   const schoolDir = await getOrCreateDirectory(schoolsDir, schoolDirName);
   const photosDir = await getOrCreateDirectory(schoolDir, "photos");
   const originalsDir = await getOrCreateDirectory(photosDir, "originals");
@@ -5796,7 +5974,7 @@ async function saveOriginalPhotoToAlbum(file, photoId, context = {}) {
   return {
     storage: "local-folder",
     albumRoot: state.album.rootName || root.name || "",
-    relativePath: ["campus-memoir", "schools", schoolDirName, "photos", "originals", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), fileName].join("/"),
+    relativePath: [LIBRARY_DIR_NAME, LIBRARY_SCHOOLS_DIR, schoolDirName, "photos", "originals", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), fileName].join("/"),
     name: file.name || fileName,
     type: file.type || "application/octet-stream",
     size: file.size || 0,
@@ -5807,14 +5985,162 @@ async function saveOriginalPhotoToAlbum(file, photoId, context = {}) {
   };
 }
 
+async function getLibraryRootDirectory(root = state.album.handle, options = {}) {
+  if (!root) throw new Error("资料库未连接");
+  return getOrCreateDirectory(root, LIBRARY_DIR_NAME, options);
+}
+
+function getLibrarySchoolDirName(school) {
+  return safeFileName(school?.id || school?.name || "unknown-school");
+}
+
+async function readJsonFileFromDirectory(directory, name) {
+  try {
+    const handle = await directory.getFileHandle(name);
+    const file = await handle.getFile();
+    return JSON.parse(await file.text());
+  } catch (error) {
+    if (error?.name === "NotFoundError") return null;
+    throw error;
+  }
+}
+
+async function writeJsonFileToDirectory(directory, name, data) {
+  const fileHandle = await directory.getFileHandle(name, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  await writable.close();
+}
+
+async function writeBlobFileToDirectory(directory, name, blob) {
+  const fileHandle = await directory.getFileHandle(name, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+}
+
 function sanitizePhotoContext(context = {}) {
   return Object.fromEntries(Object.entries(context)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([key, value]) => [key, String(value).slice(0, 120)]));
 }
 
-async function getOrCreateDirectory(parent, name) {
-  return parent.getDirectoryHandle(safeFileName(name), { create: true });
+async function getOrCreateDirectory(parent, name, options = {}) {
+  return parent.getDirectoryHandle(safeFileName(name), { create: options.create !== false });
+}
+
+function makeLibraryIndex(schools) {
+  const now = new Date().toISOString();
+  return {
+    kind: "campus-memoir-library",
+    version: 1,
+    updatedAt: now,
+    schools: schools.map((school) => ({
+      id: school.id,
+      name: school.name,
+      directory: getLibrarySchoolDirName(school),
+      manifest: [LIBRARY_SCHOOLS_DIR, getLibrarySchoolDirName(school), LIBRARY_MANIFEST_FILE].join("/"),
+      updatedAt: school.libraryUpdatedAt || school.createdAt || now
+    }))
+  };
+}
+
+async function buildSchoolLibraryManifest(school) {
+  const mapBlob = await getMapImage(school.id);
+  const mapName = school.mapImageName || "map-image";
+  return {
+    kind: "campus-memoir-school-library",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    school: {
+      id: school.id,
+      name: school.name,
+      mapImageName: mapName,
+      mapFile: mapBlob ? LIBRARY_MAP_FILE : "",
+      mapMeta: getSchoolMapMetaForExport(school),
+      mapImageStored: Boolean(mapBlob || school.mapImageStored),
+      structureName: school.structureName,
+      extraImageCount: school.extraImageCount,
+      peopleFileName: school.peopleFileName,
+      createdAt: school.createdAt
+    },
+    editData: await getEditData(school.id),
+    gameData: await getGameData(school.id),
+    peopleData: await getPeopleData(school.id),
+    extraImages: await getExtraImages(school.id)
+  };
+}
+
+async function writeSchoolToLibrary(appDir, school) {
+  const schoolsDir = await getOrCreateDirectory(appDir, LIBRARY_SCHOOLS_DIR);
+  const schoolDir = await getOrCreateDirectory(schoolsDir, getLibrarySchoolDirName(school));
+  const manifest = await buildSchoolLibraryManifest(school);
+  const mapBlob = await getMapImage(school.id);
+  if (mapBlob) await writeBlobFileToDirectory(schoolDir, LIBRARY_MAP_FILE, mapBlob);
+  await writeJsonFileToDirectory(schoolDir, LIBRARY_MANIFEST_FILE, manifest);
+  school.libraryUpdatedAt = manifest.exportedAt;
+  return manifest;
+}
+
+async function readLibraryIndex() {
+  if (!state.album.handle) return null;
+  const appDir = await getLibraryRootDirectory(state.album.handle, { create: false });
+  return readJsonFileFromDirectory(appDir, LIBRARY_INDEX_FILE);
+}
+
+async function readSchoolManifestFromLibrary(appDir, entry) {
+  const directoryName = entry?.directory || "";
+  if (!directoryName) return null;
+  const schoolsDir = await getOrCreateDirectory(appDir, LIBRARY_SCHOOLS_DIR, { create: false });
+  const schoolDir = await getOrCreateDirectory(schoolsDir, directoryName, { create: false });
+  const manifest = await readJsonFileFromDirectory(schoolDir, LIBRARY_MANIFEST_FILE);
+  if (!manifest) return null;
+  let mapBlob = null;
+  const mapFileName = manifest.school?.mapFile || LIBRARY_MAP_FILE;
+  if (mapFileName) {
+    try {
+      const mapHandle = await schoolDir.getFileHandle(mapFileName);
+      mapBlob = await mapHandle.getFile();
+    } catch (error) {
+      if (error?.name !== "NotFoundError") throw error;
+    }
+  }
+  return { manifest, mapBlob };
+}
+
+async function importLibrarySchoolBundle(bundle, options = {}) {
+  const manifest = bundle?.manifest;
+  if (!manifest || manifest.kind !== "campus-memoir-school-library") return null;
+  const sourceId = manifest.school?.id || "";
+  const existing = state.schools.find((school) => school.id === sourceId);
+  if (existing && !options.overwrite) return existing;
+  const id = sourceId || createId("school");
+  const school = {
+    id,
+    name: manifest.school?.name || "资料库学校",
+    mapImageName: manifest.school?.mapImageName || bundle.mapBlob?.name || "",
+    mapMeta: normalizeMapMeta(manifest.school?.mapMeta),
+    mapImageStored: Boolean(bundle.mapBlob || manifest.school?.mapImageStored),
+    structureName: manifest.school?.structureName || (manifest.editData ? "资料库结构" : ""),
+    extraImageCount: Array.isArray(manifest.extraImages) ? manifest.extraImages.length : 0,
+    peopleFileName: manifest.school?.peopleFileName || (manifest.peopleData ? "资料库人物" : ""),
+    createdAt: manifest.school?.createdAt || new Date().toISOString(),
+    libraryUpdatedAt: manifest.exportedAt || new Date().toISOString()
+  };
+  if (bundle.mapBlob) {
+    const mapFile = new File([bundle.mapBlob], school.mapImageName || bundle.mapBlob.name || "map-image", { type: bundle.mapBlob.type || manifest.school?.mapMeta?.type || "application/octet-stream" });
+    school.mapMeta = mergeMapMeta(school.mapMeta, await putMapImage(id, mapFile));
+  }
+  await putEditData(id, normalizeEditData(manifest.editData));
+  await putGameData(id, normalizeGameData(manifest.gameData));
+  await putPeopleData(id, manifest.peopleData || null);
+  await putExtraImages(id, Array.isArray(manifest.extraImages) ? manifest.extraImages : []);
+  const index = state.schools.findIndex((item) => item.id === id);
+  if (index >= 0) state.schools[index] = school;
+  else state.schools.push(school);
+  state.editCache.delete(id);
+  state.gameCache.delete(id);
+  return school;
 }
 
 function makeAlbumPhotoFileName(name, photoId) {
@@ -11831,7 +12157,7 @@ async function loadAlbumSettings() {
       permission: state.album.supported ? "prompt" : "unsupported",
       rootName: "",
       status: state.album.supported ? "not-set" : "unsupported",
-      message: state.album.supported ? "还没有设置相册库。" : "当前浏览器不支持本地相册库，照片会存入浏览器。"
+      message: state.album.supported ? "还没有设置游戏资料库。" : "当前浏览器不支持本地资料库，照片会存入浏览器。"
     };
     renderAlbumStatus();
     return;
@@ -11846,7 +12172,7 @@ async function loadAlbumSettings() {
       permission: "prompt",
       rootName: "",
       status: "not-set",
-      message: "还没有设置相册库。"
+      message: "还没有设置游戏资料库。"
     };
     renderAlbumStatus();
     return;
@@ -11857,9 +12183,9 @@ async function loadAlbumSettings() {
     handle,
     enabled: permission === "granted",
     permission,
-    rootName: settings.rootName || handle.name || "相册库",
+    rootName: settings.rootName || handle.name || "游戏资料库",
     status: permission === "granted" ? "connected" : "needs-permission",
-    message: permission === "granted" ? "原图会保存到本机相册库。" : "浏览器需要重新授权相册库。"
+    message: permission === "granted" ? "游戏资料库已连接。" : "浏览器需要重新授权游戏资料库。"
   };
   renderAlbumStatus();
 }
@@ -11870,7 +12196,7 @@ async function saveAlbumSettings() {
     ? {
         version: 1,
         handle: state.album.handle,
-        rootName: state.album.rootName || state.album.handle.name || "相册库",
+        rootName: state.album.rootName || state.album.handle.name || "游戏资料库",
         updatedAt: new Date().toISOString()
       }
     : null;
@@ -11883,7 +12209,7 @@ async function queryAlbumPermission(handle) {
   try {
     return await handle.queryPermission({ mode: "readwrite" });
   } catch (error) {
-    console.warn("相册库权限检测失败:", error);
+    console.warn("资料库权限检测失败:", error);
     return "denied";
   }
 }
@@ -11894,7 +12220,7 @@ async function requestAlbumPermission(handle) {
   try {
     return await handle.requestPermission({ mode: "readwrite" });
   } catch (error) {
-    console.warn("相册库授权失败:", error);
+    console.warn("资料库授权失败:", error);
     return "denied";
   }
 }
@@ -11919,7 +12245,7 @@ async function chooseAlbumFolder() {
   if (!isAlbumModeSupported()) {
     state.album.supported = false;
     state.album.status = "unsupported";
-    state.album.message = "当前浏览器不支持本地相册库，照片会存入浏览器。";
+    state.album.message = "当前浏览器不支持本地资料库，照片会存入浏览器。";
     renderAlbumStatus();
     return;
   }
@@ -11933,17 +12259,21 @@ async function chooseAlbumFolder() {
       handle,
       enabled: permission === "granted",
       permission,
-      rootName: handle.name || "相册库",
+      rootName: handle.name || "游戏资料库",
       status: permission === "granted" ? "connected" : "needs-permission",
       message: permission === "granted"
-        ? (persisted ? "相册库已连接，原图会保存到本机文件夹。" : "相册库已连接，浏览器仍可能要求重新授权。")
+        ? (persisted ? "游戏资料库已连接。" : "游戏资料库已连接，浏览器仍可能要求重新授权。")
         : "没有获得写入权限，暂时使用浏览器存储。"
     };
     await saveAlbumSettings();
+    if (state.album.enabled) {
+      await restoreMissingSchoolsFromLibrary();
+      await syncLibraryFromBrowser({ manual: true });
+    }
   } catch (error) {
     if (error?.name !== "AbortError") {
-      console.warn("选择相册库失败:", error);
-      state.album.message = "相册库设置失败，暂时使用浏览器存储。";
+      console.warn("选择资料库失败:", error);
+      state.album.message = "资料库设置失败，暂时使用浏览器存储。";
     }
   }
   renderAlbumStatus();
@@ -11960,9 +12290,13 @@ async function reconnectAlbumFolder() {
   state.album.permission = permission;
   state.album.status = permission === "granted" ? "connected" : "needs-permission";
   state.album.message = permission === "granted"
-    ? (persisted ? "相册库已重新授权。" : "相册库已重新授权，浏览器仍可能要求再次确认。")
-    : "仍未获得相册库写入权限。";
+    ? (persisted ? "游戏资料库已重新授权。" : "游戏资料库已重新授权，浏览器仍可能要求再次确认。")
+    : "仍未获得游戏资料库写入权限。";
   await saveAlbumSettings();
+  if (state.album.enabled) {
+    await restoreMissingSchoolsFromLibrary();
+    await syncLibraryFromBrowser({ manual: true });
+  }
   renderAlbumStatus();
 }
 
@@ -11974,7 +12308,7 @@ async function forgetAlbumFolder() {
     permission: state.album.supported ? "prompt" : "unsupported",
     rootName: "",
     status: state.album.supported ? "not-set" : "unsupported",
-    message: state.album.supported ? "已关闭相册库，之后照片会存入浏览器。" : "当前浏览器不支持本地相册库。"
+    message: state.album.supported ? "已关闭游戏资料库，之后照片会存入浏览器。" : "当前浏览器不支持本地资料库。"
   };
   await saveAlbumSettings();
   renderAlbumStatus();
@@ -11992,13 +12326,21 @@ function renderAlbumStatus() {
   };
   els.albumStatus.textContent = labels[album.status] || "未设置";
   els.albumStatus.dataset.status = album.status || "not-set";
-  els.albumDescription.textContent = album.message || "原图可保存到本机文件夹，游戏内只保留预览图。";
+  const syncText = album.syncMessage ? ` ${album.syncMessage}` : "";
+  els.albumDescription.textContent = `${album.message || "地图、结构、照片原图和游戏数据可同步到本机文件夹。"}${syncText}`;
   if (els.albumChooseButton) {
     els.albumChooseButton.disabled = !album.supported;
-    els.albumChooseButton.textContent = album.handle ? "更换相册" : "设置相册";
+    els.albumChooseButton.textContent = album.handle ? "更换资料库" : "选择资料库";
   }
   if (els.albumReconnectButton) {
     els.albumReconnectButton.disabled = !album.supported || !album.handle;
+  }
+  if (els.librarySyncButton) {
+    els.librarySyncButton.disabled = !album.supported || !album.handle || album.syncRunning;
+    els.librarySyncButton.textContent = album.syncRunning ? "同步中" : "同步";
+  }
+  if (els.libraryRestoreButton) {
+    els.libraryRestoreButton.disabled = !album.supported || !album.handle || album.syncRunning;
   }
   if (els.albumForgetButton) {
     els.albumForgetButton.disabled = !album.handle;
@@ -12050,6 +12392,7 @@ async function putMapImage(schoolId, file) {
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);
   });
+  scheduleLibrarySync();
   const size = await readImageNaturalSize(file);
   return {
     name: record.name,
@@ -12095,7 +12438,7 @@ function putEditData(schoolId, editData) {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);
-  });
+  }).then(() => scheduleLibrarySync());
 }
 
 function getEditData(schoolId) {
@@ -12132,7 +12475,7 @@ function migrateStoredEditData() {
 
 function putPeopleData(schoolId, data) {
   if (!state.db) return Promise.resolve();
-  return putStoreValue(PEOPLE_DATA_STORE, schoolId, data || null);
+  return putStoreValue(PEOPLE_DATA_STORE, schoolId, data || null).then(() => scheduleLibrarySync());
 }
 
 function getPeopleData(schoolId) {
@@ -12142,7 +12485,7 @@ function getPeopleData(schoolId) {
 
 function putExtraImages(schoolId, records) {
   if (!state.db) return Promise.resolve();
-  return putStoreValue(EXTRA_IMAGES_STORE, schoolId, records || []);
+  return putStoreValue(EXTRA_IMAGES_STORE, schoolId, records || []).then(() => scheduleLibrarySync());
 }
 
 function getExtraImages(schoolId) {
@@ -12152,7 +12495,7 @@ function getExtraImages(schoolId) {
 
 function putGameData(schoolId, data) {
   if (!state.db) return Promise.resolve();
-  return putStoreValue(GAME_DATA_STORE, schoolId, normalizeGameData(data));
+  return putStoreValue(GAME_DATA_STORE, schoolId, normalizeGameData(data)).then(() => scheduleLibrarySync());
 }
 
 function getGameData(schoolId) {
@@ -12653,7 +12996,9 @@ function renderToText() {
       enabled: state.album.enabled,
       status: state.album.status,
       permission: state.album.permission,
-      rootName: state.album.rootName || ""
+      rootName: state.album.rootName || "",
+      syncStatus: state.album.syncStatus,
+      syncMessage: state.album.syncMessage || ""
     },
     game: getGameTextState(),
     layout: {
