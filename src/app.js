@@ -390,6 +390,8 @@ const OFFICIAL_CATALOG = [
   }
 ];
 
+const DOWNLOAD_CONNECT_TIMEOUT_MS = 12000;
+
 function createEmptyFormDraft() {
   return {
     name: "",
@@ -1651,8 +1653,11 @@ async function downloadOfficialPackage(item) {
   els.formNote.textContent = `正在下载 ${item.name}...`;
   els.formNote.classList.remove("error");
   setBulkBusy(true);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), DOWNLOAD_CONNECT_TIMEOUT_MS);
   try {
-    const response = await fetch(item.packageUrl);
+    const response = await fetch(item.packageUrl, { signal: controller.signal });
+    window.clearTimeout(timeoutId);
     if (!response.ok) throw new Error(`download failed: ${response.status}`);
     const blob = await readResponseBlobWithProgress(response, item.id);
     setDownloadJob(item.id, {
@@ -1678,6 +1683,7 @@ async function downloadOfficialPackage(item) {
     els.formNote.textContent = `已导入 ${schoolName}。`;
     els.formNote.classList.remove("error");
   } catch (error) {
+    window.clearTimeout(timeoutId);
     console.warn(error);
     const errorMessage = getDownloadFailureMessage(error);
     setDownloadJob(item.id, {
@@ -1695,6 +1701,9 @@ async function downloadOfficialPackage(item) {
 
 function getDownloadFailureMessage(error) {
   const text = String(error?.message || error || "");
+  if (error?.name === "AbortError" || /aborted|abort/i.test(text)) {
+    return "连接超时，请点手动下载后再用导入。";
+  }
   if (/Failed to fetch|Load failed|NetworkError/i.test(text)) {
     return "浏览器无法直接读取 GitHub Release，请点手动下载后再用导入。";
   }
@@ -2323,7 +2332,6 @@ function renderDownloadCatalog() {
     fallback.type = "button";
     fallback.textContent = "手动下载";
     fallback.title = "打开 GitHub Release 下载链接";
-    fallback.disabled = busy;
     fallback.addEventListener("click", () => {
       openOfficialPackageDownload(item);
     });
@@ -2356,7 +2364,7 @@ function renderDownloadJob(itemId) {
     buttons[0].disabled = busy;
     buttons[0].textContent = busy ? "下载中..." : job?.status === "done" ? "重新导入" : "下载并导入";
   }
-  if (buttons[1]) buttons[1].disabled = busy;
+  if (buttons[1]) buttons[1].disabled = false;
 }
 
 function getDownloadJobText(job) {
