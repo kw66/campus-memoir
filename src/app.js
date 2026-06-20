@@ -4709,12 +4709,11 @@ function getInteriorSpecialRoomCells(rooms) {
         ];
   }
   if (rooms.length === 3) {
-    const firstW = (w - gap * 2) / 2;
-    const sideW = (w - firstW - gap * 2) / 2;
+    const thirdW = (w - gap * 2) / 3;
     return [
-      make(rooms[0], 0, 0, 0, firstW, h),
-      make(rooms[1], 1, firstW + gap, 0, sideW, h),
-      make(rooms[2], 2, firstW + sideW + gap * 2, 0, sideW, h)
+      make(rooms[0], 0, 0, 0, thirdW, h),
+      make(rooms[1], 1, thirdW + gap, 0, thirdW, h),
+      make(rooms[2], 2, (thirdW + gap) * 2, 0, thirdW, h)
     ];
   }
   if (rooms.length === 4) {
@@ -4764,6 +4763,44 @@ function getInteriorCellForPoint(point, building = getSelectedBuildingMemory()) 
     }
   }
   return best;
+}
+
+function snapshotInteriorRoomAnchors(building) {
+  const layout = getInteriorRoomLayout(building);
+  const anchors = new Map();
+  for (const cell of layout.cells) {
+    if (!cell.room?.id) continue;
+    const spots = (cell.room.spots || []).map((spot) => ({
+      spot,
+      rx: clamp((spot.x - cell.x) / Math.max(1, cell.width), 0, 1),
+      ry: clamp((spot.y - cell.y) / Math.max(1, cell.height), 0, 1)
+    }));
+    const player = building?.interiorPlayer && state.gameData.location.kind === "building" && state.gameData.location.roomId === cell.room.id
+      ? {
+          rx: clamp((building.interiorPlayer.x - cell.x) / Math.max(1, cell.width), 0, 1),
+          ry: clamp((building.interiorPlayer.y - cell.y) / Math.max(1, cell.height), 0, 1)
+        }
+      : null;
+    anchors.set(cell.room.id, { spots, player });
+  }
+  return anchors;
+}
+
+function restoreInteriorRoomAnchors(building, anchors) {
+  if (!building || !anchors?.size) return;
+  const layout = getInteriorRoomLayout(building);
+  for (const cell of layout.cells) {
+    const anchor = anchors.get(cell.room?.id);
+    if (!anchor) continue;
+    for (const entry of anchor.spots || []) {
+      entry.spot.x = clamp(cell.x + entry.rx * cell.width, cell.x + 1, cell.x + cell.width - 1);
+      entry.spot.y = clamp(cell.y + entry.ry * cell.height, cell.y + 1, cell.y + cell.height - 1);
+    }
+    if (anchor.player && building.interiorPlayer) {
+      building.interiorPlayer.x = clamp(cell.x + anchor.player.rx * cell.width, cell.x + 1, cell.x + cell.width - 1);
+      building.interiorPlayer.y = clamp(cell.y + anchor.player.ry * cell.height, cell.y + 1, cell.y + cell.height - 1);
+    }
+  }
 }
 
 function getInteriorSpotAtPoint(point, building = getSelectedBuildingMemory()) {
@@ -7024,6 +7061,7 @@ function exitBuilding() {
 function addRoomToSelectedBuilding() {
   const building = getSelectedBuildingMemory();
   if (!building) return;
+  const anchors = snapshotInteriorRoomAnchors(building);
   const name = els.gamePanel.querySelector('[data-game-field="newRoomName"]')?.value?.trim() || "";
   const type = els.gamePanel.querySelector('[data-game-field="newRoomType"]')?.value || getBuildingRule(building).roomTypes[0] || "自定义";
   const room = normalizeRoom({
@@ -7033,6 +7071,7 @@ function addRoomToSelectedBuilding() {
     createdAt: new Date().toISOString()
   });
   building.rooms.push(room);
+  restoreInteriorRoomAnchors(building, anchors);
   state.gameData.selectedRoomId = room.id;
   state.gameData.location.roomId = room.id;
   state.gameData.selectedItemId = "";
@@ -7283,7 +7322,10 @@ function deleteSelectedRoom() {
   const building = getSelectedBuildingMemory();
   const room = getSelectedRoom();
   if (!building || !room) return;
+  const anchors = snapshotInteriorRoomAnchors(building);
+  anchors.delete(room.id);
   building.rooms = building.rooms.filter((item) => item.id !== room.id);
+  restoreInteriorRoomAnchors(building, anchors);
   state.gameData.selectedRoomId = building.rooms[0]?.id || "";
   state.gameData.location.roomId = state.gameData.selectedRoomId;
   state.gameData.selectedItemId = "";
@@ -10564,32 +10606,44 @@ function drawGamePhotoMarkers(ctx) {
   const spots = [...state.gameData.photoSpots].sort(compareMapDepthItems);
   for (const spot of spots) {
     const screen = imageToScreen(spot);
-    const radius = Math.max(7, (spot.radius || playerRadius) * state.view.scale * 0.36);
-    if (screen.x < -radius || screen.y < -radius || screen.x > state.canvasSize.width + radius || screen.y > state.canvasSize.height + radius) continue;
     const active = spot.id === state.gameData.selectedPhotoSpotId || spot.id === state.currentNearbyPhotoSpotId;
+    const radius = getPhotoSpotDotRadius(spot, state.view.scale, playerRadius);
+    if (screen.x < -radius || screen.y < -radius || screen.x > state.canvasSize.width + radius || screen.y > state.canvasSize.height + radius) continue;
     if (!active && !showAnnotations) continue;
-    ctx.save();
-    ctx.fillStyle = active ? "rgba(226, 118, 77, 0.95)" : "rgba(255, 250, 240, 0.88)";
-    ctx.strokeStyle = active ? "#8f3f2d" : "rgba(31, 85, 78, 0.88)";
-    ctx.lineWidth = active ? Math.max(3, state.view.scale * 0.9) : Math.max(2, state.view.scale * 0.55);
-    ctx.beginPath();
-    ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    if (active) {
-      ctx.beginPath();
-      ctx.arc(screen.x, screen.y, radius + Math.max(4, state.view.scale * 0.8), 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(143, 63, 45, 0.24)";
-      ctx.lineWidth = Math.max(2, state.view.scale * 0.4);
-      ctx.stroke();
-    }
-    ctx.fillStyle = active ? "#fffaf0" : "#1f554e";
-    ctx.font = "900 12px Microsoft YaHei, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(spot.photos.length || 0), screen.x, screen.y + 0.5);
-    ctx.restore();
+    drawPhotoSpotMapDot(ctx, spot, screen, { active, scale: state.view.scale, fallbackRadius: playerRadius });
   }
+}
+
+function getPhotoSpotDotRadius(spot, scale, fallbackRadius = DEFAULT_PLAYER_RADIUS) {
+  return Math.max(7, (spot?.radius || fallbackRadius || DEFAULT_PLAYER_RADIUS) * scale * 0.36);
+}
+
+function drawPhotoSpotMapDot(ctx, spot, screen, options = {}) {
+  const scale = Number(options.scale) || 1;
+  const active = Boolean(options.active);
+  const radius = getPhotoSpotDotRadius(spot, scale, options.fallbackRadius);
+  ctx.save();
+  ctx.fillStyle = active ? "rgba(226, 118, 77, 0.95)" : "rgba(255, 250, 240, 0.88)";
+  ctx.strokeStyle = active ? "#8f3f2d" : "rgba(31, 85, 78, 0.88)";
+  ctx.lineWidth = active ? Math.max(3, scale * 0.9) : Math.max(2, scale * 0.55);
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  if (active) {
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, radius + Math.max(4, scale * 0.8), 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(143, 63, 45, 0.24)";
+    ctx.lineWidth = Math.max(2, scale * 0.4);
+    ctx.stroke();
+  }
+  ctx.fillStyle = active ? "#fffaf0" : "#1f554e";
+  ctx.font = "900 12px Microsoft YaHei, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(spot?.photos?.length || 0), screen.x, screen.y + 0.5);
+  ctx.restore();
+  return radius;
 }
 
 function drawNearbyBuildingHints(ctx, editData) {
@@ -11006,6 +11060,7 @@ function drawInteriorScene(ctx) {
   }
   drawInteriorMoveTarget(ctx);
   drawInteriorPlayer(ctx);
+  drawInteriorSpotMarkerCards(ctx);
   ctx.restore();
   ctx.restore();
 }
@@ -11119,56 +11174,69 @@ function drawInteriorRoomEntities(ctx, room, x, y, width, height, active) {
 function drawInteriorSpotMarkers(ctx, room, x, y, width, height, active) {
   const spots = room?.spots || [];
   if (!spots.length) return;
-  const selected = getSelectedInteriorSpot(room);
+  const selectedTarget = getSelectedInteriorInteractionTarget();
+  const selectedSpotKey = selectedTarget?.kind === "interiorSpot"
+    ? `${selectedTarget.room.id}:${selectedTarget.spot.id}`
+    : "";
   const roomIndex = getInteriorRoomLayout().cells.find((cell) => cell.room?.id === room.id);
   const roomX = roomIndex?.x || 0;
   const roomY = roomIndex?.y || 0;
   const roomW = roomIndex?.width || INTERIOR_MAP_WIDTH;
   const roomH = roomIndex?.height || INTERIOR_MAP_HEIGHT;
-  const marker = Math.max(12, Math.min(28, INTERIOR_PLAYER_RADIUS * Math.min(width / Math.max(1, roomW), height / Math.max(1, roomH)) * 0.95));
   const showAnnotations = showMapAnnotations();
   ctx.save();
   for (const [index, spot] of spots.entries()) {
-    const localX = clamp((spot.x - roomX) / Math.max(1, roomW), 0.05, 0.95);
-    const localY = clamp((spot.y - roomY) / Math.max(1, roomH), 0.08, 0.92);
+    const localX = clamp((spot.x - roomX) / Math.max(1, roomW), 0, 1);
+    const localY = clamp((spot.y - roomY) / Math.max(1, roomH), 0, 1);
     const px = x + localX * width;
     const py = y + localY * height;
-    const isSelected = spot.id === selected?.id;
+    const isSelected = selectedSpotKey === `${room.id}:${spot.id}`;
     if (!isSelected && !showAnnotations) continue;
-    const image = getRepresentativePhotoImage(spot);
-    ctx.beginPath();
-    ctx.arc(px, py, marker, 0, Math.PI * 2);
-    ctx.fillStyle = isSelected ? "rgba(226, 118, 77, 0.96)" : "rgba(255, 250, 240, 0.90)";
-    ctx.fill();
-    if (image && isPhotoImageReady(image)) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(px, py, marker, 0, Math.PI * 2);
-      ctx.clip();
-      drawCoverImage(ctx, image, px - marker, py - marker, marker * 2, marker * 2);
-      ctx.restore();
-    } else {
-      ctx.fillStyle = isSelected ? "#fffaf0" : "#1f554e";
-      ctx.font = `900 ${Math.max(10, marker * 0.7)}px Microsoft YaHei, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText((spot.kind || "照").slice(0, 1), px, py + 0.5);
-    }
-    ctx.strokeStyle = isSelected ? "#1f554e" : "rgba(31, 85, 78, 0.86)";
-    ctx.lineWidth = isSelected ? 2.8 : 1.8;
-    ctx.beginPath();
-    ctx.arc(px, py, marker, 0, Math.PI * 2);
-    ctx.stroke();
-    if (showAnnotations) {
-      drawGameLabel(ctx, getInteriorSpotDisplayName(spot, index), px, py + marker + 14, {
-        selected: isSelected,
-        maxWidth: 140,
-        height: 22,
-        font: "800 11px Microsoft YaHei, sans-serif"
+    const scale = Math.min(width / Math.max(1, roomW), height / Math.max(1, roomH));
+    drawPhotoSpotMapDot(ctx, spot, { x: px, y: py }, { active: isSelected, scale, fallbackRadius: DEFAULT_PLAYER_RADIUS });
+  }
+  ctx.restore();
+}
+
+function drawInteriorSpotMarkerCards(ctx) {
+  if (!showMapAnnotations()) return;
+  const building = getSelectedBuildingMemory();
+  if (!building?.rooms?.length) return;
+  const layout = getInteriorRoomLayout(building);
+  const rect = getInteriorCanvasRect();
+  const selectedRoom = getSelectedRoom();
+  const selectedTarget = getSelectedInteriorInteractionTarget();
+  const selectedSpotKey = selectedTarget?.kind === "interiorSpot"
+    ? `${selectedTarget.room.id}:${selectedTarget.spot.id}`
+    : "";
+  const cards = [];
+  for (const cell of layout.cells) {
+    const room = cell.room;
+    for (const [index, spot] of (room.spots || []).entries()) {
+      const screen = interiorToScreen(spot);
+      const scale = Math.min(rect.scaleX, rect.scaleY);
+      const marker = getPhotoSpotDotRadius(spot, scale, DEFAULT_PLAYER_RADIUS);
+      cards.push({
+        kind: "interiorPhotoSpot",
+        id: spot.id,
+        mapX: spot.x,
+        mapY: spot.y,
+        order: cards.length,
+        draw: () => {
+          const isSelected = selectedSpotKey === `${room.id}:${spot.id}`;
+          drawPhotoSpotMarkerCard(ctx, {
+            ...spot,
+            name: spot.name || getInteriorSpotDisplayName(spot, index)
+          }, screen, {
+            selected: isSelected,
+            nearby: isSelected,
+            yOffset: -marker - 8
+          });
+        }
       });
     }
   }
-  ctx.restore();
+  cards.sort(compareMapDepthItems).forEach((card) => card.draw());
 }
 
 function drawInteriorPlayer(ctx) {
