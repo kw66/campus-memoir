@@ -355,6 +355,71 @@ body.game-info-open {
   gap: 6px;
 }
 
+.library-browser {
+  max-height: min(280px, 38vh);
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 72%);
+  border-radius: 7px;
+  background: #fffaf0;
+}
+
+.library-browser-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.library-browser-head strong {
+  min-width: 0;
+  color: var(--accent-strong);
+  font-size: 13px;
+}
+
+.library-browser p {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.library-browser ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library-browser li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+  padding: 5px 6px;
+  border-radius: 6px;
+  background: #f7efe1;
+}
+
+.library-browser li strong,
+.library-browser li small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-browser li strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.library-browser li small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .stats-card {
   grid-column: auto;
 }

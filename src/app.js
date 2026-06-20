@@ -17,7 +17,20 @@ const LIBRARY_INDEX_FILE = "library.json";
 const LIBRARY_SCHOOLS_DIR = "schools";
 const LIBRARY_MANIFEST_FILE = "school.json";
 const LIBRARY_MAP_FILE = "map-image";
+const LIBRARY_NO_MEDIA_FILE = ".nomedia";
 const LIBRARY_SYNC_DEBOUNCE_MS = 900;
+const IMAGE_MIME_EXTENSIONS = {
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/heic": ".heic",
+  "image/heif": ".heif",
+  "image/bmp": ".bmp",
+  "image/svg+xml": ".svg",
+  "image/tiff": ".tif"
+};
 const STRUCTURE_BRUSH_SIZE = 24;
 const LINEAR_STRUCTURE_WIDTH = 12;
 const DEFAULT_PLAYER_RADIUS = 26;
@@ -446,6 +459,10 @@ const state = {
     message: "正在检测资料库...",
     syncStatus: "idle",
     syncMessage: "",
+    lastError: "",
+    browserOpen: false,
+    browserEntries: [],
+    browserMessage: "",
     syncUpdatedAt: "",
     syncTimer: null,
     syncRunning: false,
@@ -577,10 +594,12 @@ const els = {
   albumStatus: document.querySelector("#albumStatus"),
   albumDescription: document.querySelector("#albumDescription"),
   albumChooseButton: document.querySelector("#albumChooseButton"),
+  libraryOpenButton: document.querySelector("#libraryOpenButton"),
   albumReconnectButton: document.querySelector("#albumReconnectButton"),
   librarySyncButton: document.querySelector("#librarySyncButton"),
   libraryRestoreButton: document.querySelector("#libraryRestoreButton"),
   albumForgetButton: document.querySelector("#albumForgetButton"),
+  libraryBrowser: document.querySelector("#libraryBrowser"),
   globalStatsPanel: document.querySelector("#globalStatsPanel"),
   globalStatsStatus: document.querySelector("#globalStatsStatus"),
   explorationProgress: document.querySelector("#explorationProgress"),
@@ -799,6 +818,8 @@ async function init() {
       syncLibraryFromBrowser,
       restoreSchoolsFromLibrary,
       restoreMissingSchoolsFromLibrary,
+      refreshLibraryBrowser,
+      createPhotoFromFile,
       getCurrentAreaDraft,
       createParallelogramAreaFromThreePoints,
       normalizeArea,
@@ -924,6 +945,10 @@ function bindEvents() {
 
   els.albumChooseButton.addEventListener("click", () => {
     void chooseAlbumFolder();
+  });
+
+  els.libraryOpenButton.addEventListener("click", () => {
+    void toggleLibraryBrowser();
   });
 
   els.albumReconnectButton.addEventListener("click", () => {
@@ -2129,6 +2154,18 @@ function setLibrarySyncState(status, message = "") {
   renderAlbumStatus();
 }
 
+function describeLibraryError(error) {
+  if (!error) return "未知错误";
+  const name = error.name || "Error";
+  const message = error.message || String(error);
+  if (name === "NotAllowedError") return "没有资料库写入权限，请点重连后再同步。";
+  if (name === "NotFoundError") return "资料库目录或文件不存在，请重新选择资料库。";
+  if (name === "QuotaExceededError") return "浏览器或设备空间不足，无法写入资料库。";
+  if (name === "SecurityError") return "浏览器阻止访问该资料库目录，请换一个普通文件夹。";
+  if (name === "AbortError") return "资料库操作已取消。";
+  return `${name}: ${message}`.slice(0, 160);
+}
+
 function clearLibrarySyncQueue() {
   window.clearTimeout(state.album.syncTimer);
   state.album.syncTimer = null;
@@ -2166,7 +2203,8 @@ async function syncLibraryFromBrowser(options = {}) {
     setLibrarySyncState("synced", options.manual ? "已同步到资料库。" : "资料库已更新。");
   } catch (error) {
     console.warn("资料库同步失败:", error);
-    setLibrarySyncState("error", "资料库同步失败。");
+    state.album.lastError = describeLibraryError(error);
+    setLibrarySyncState("error", `同步失败：${state.album.lastError}`);
   } finally {
     state.album.syncRunning = false;
     if (state.album.pendingSync) scheduleLibrarySync({ immediate: true });
@@ -2219,7 +2257,8 @@ async function restoreSchoolsFromLibrary(options = {}) {
   } catch (error) {
     state.album.suspendSync = false;
     console.warn("资料库恢复失败:", error);
-    setLibrarySyncState("error", "资料库恢复失败。");
+    state.album.lastError = describeLibraryError(error);
+    setLibrarySyncState("error", `恢复失败：${state.album.lastError}`);
   }
 }
 
@@ -2255,6 +2294,89 @@ async function restoreMissingSchoolsFromLibrary() {
     state.album.suspendSync = false;
     if (error?.name !== "NotFoundError") console.warn("资料库缺失学校恢复失败:", error);
     return 0;
+  }
+}
+
+async function toggleLibraryBrowser() {
+  if (state.album.browserOpen) {
+    state.album.browserOpen = false;
+    renderLibraryBrowser();
+    return;
+  }
+  state.album.browserOpen = true;
+  await refreshLibraryBrowser();
+}
+
+async function refreshLibraryBrowser() {
+  state.album.browserOpen = true;
+  state.album.browserEntries = [];
+  if (!state.album.supported) {
+    state.album.browserMessage = "当前浏览器不支持本地资料库。";
+    renderLibraryBrowser();
+    return;
+  }
+  if (!state.album.handle) {
+    state.album.browserMessage = "还没有选择资料库。";
+    renderLibraryBrowser();
+    return;
+  }
+  renderLibraryBrowser("正在读取资料库...");
+  try {
+    const permission = await ensureAlbumPermission(state.album.handle);
+    state.album.permission = permission;
+    state.album.enabled = permission === "granted";
+    state.album.status = state.album.enabled ? "connected" : "needs-permission";
+    if (!state.album.enabled) {
+      state.album.browserMessage = "资料库需要重新授权。";
+      renderAlbumStatus();
+      return;
+    }
+    const appDir = await getLibraryRootDirectory(state.album.handle, { create: false });
+    state.album.browserEntries = await listDirectoryEntries(appDir, "campus-memoir", 120);
+    state.album.browserMessage = state.album.browserEntries.length
+      ? `${state.album.rootName || state.album.handle.name || "资料库"} / campus-memoir`
+      : "资料库目录为空。";
+  } catch (error) {
+    state.album.lastError = describeLibraryError(error);
+    state.album.browserMessage = `读取失败：${state.album.lastError}`;
+  }
+  renderAlbumStatus();
+}
+
+async function listDirectoryEntries(directory, basePath = "", limit = 120) {
+  const entries = [];
+  await walkDirectoryEntries(directory, basePath, entries, limit, 0);
+  return entries;
+}
+
+async function walkDirectoryEntries(directory, basePath, entries, limit, depth) {
+  if (!directory || entries.length >= limit || depth > 5) return;
+  const iterator = typeof directory.values === "function"
+    ? directory.values()
+    : (typeof directory.entries === "function" ? directory.entries() : null);
+  if (!iterator) {
+    entries.push({ kind: "note", path: basePath, name: "当前浏览器不支持列出目录内容", size: 0, type: "" });
+    return;
+  }
+  for await (const item of iterator) {
+    const handle = Array.isArray(item) ? item[1] : item;
+    if (!handle || entries.length >= limit) break;
+    const path = basePath ? `${basePath}/${handle.name}` : handle.name;
+    if (handle.kind === "directory") {
+      entries.push({ kind: "directory", path, name: handle.name, size: 0, type: "" });
+      await walkDirectoryEntries(handle, path, entries, limit, depth + 1);
+      continue;
+    }
+    let size = 0;
+    let type = "";
+    try {
+      const file = await handle.getFile();
+      size = file.size || 0;
+      type = file.type || "";
+    } catch (error) {
+      type = describeLibraryError(error);
+    }
+    entries.push({ kind: "file", path, name: handle.name, size, type });
   }
 }
 
@@ -5897,12 +6019,16 @@ async function filesToPhotoRecords(files, context = {}) {
 
 async function createPhotoFromFile(file, context = {}) {
   const photoId = createId("photo");
+  const effectiveType = file.type || await inferImageMimeFromBlob(file);
+  const imageFile = effectiveType && effectiveType !== file.type
+    ? new File([file], ensureFileNameExtension(file.name || "photo", effectiveType, "photo"), { type: effectiveType, lastModified: file.lastModified || Date.now() })
+    : file;
   let original = null;
-  let previewSource = file;
+  let previewSource = imageFile;
   let previewSize = null;
   if (await canUseAlbumFolder()) {
     try {
-      original = await saveOriginalPhotoToAlbum(file, photoId, context);
+      original = await saveOriginalPhotoToAlbum(imageFile, photoId, context);
     } catch (error) {
       console.warn("保存原图到资料库失败，改用浏览器存储:", error);
       state.album.enabled = false;
@@ -5912,19 +6038,19 @@ async function createPhotoFromFile(file, context = {}) {
     }
     if (original) {
       try {
-        const preview = await createPreviewBlob(file);
+        const preview = await createPreviewBlob(imageFile);
         previewSource = preview.blob;
         previewSize = preview.size;
       } catch (error) {
         console.warn("预览图压缩失败，改用原图预览:", error);
-        previewSource = file;
+        previewSource = imageFile;
       }
     }
   }
-  if (!previewSize && file.type?.startsWith("image/")) {
+  if (!previewSize && imageFile.type?.startsWith("image/")) {
     previewSize = await readImageBlobSize(previewSource);
   }
-  const previewName = original ? makePreviewFileName(file.name, photoId) : (file.name || "photo");
+  const previewName = original ? makePreviewFileName(imageFile.name, photoId) : (imageFile.name || "photo");
   const record = await blobToResourceRecord(previewSource, previewName);
   if (previewSize?.width && previewSize?.height) {
     record.width = previewSize.width;
@@ -5932,7 +6058,7 @@ async function createPhotoFromFile(file, context = {}) {
   }
   return normalizePhotoRecord({
     id: photoId,
-    name: file.name || "photo",
+    name: file.name || imageFile.name || "photo",
     width: record.width || 0,
     height: record.height || 0,
     resource: record,
@@ -5966,7 +6092,8 @@ async function saveOriginalPhotoToAlbum(file, photoId, context = {}) {
   const now = new Date();
   const yearDir = await getOrCreateDirectory(originalsDir, String(now.getFullYear()));
   const monthDir = await getOrCreateDirectory(yearDir, String(now.getMonth() + 1).padStart(2, "0"));
-  const fileName = makeAlbumPhotoFileName(file.name, photoId);
+  const effectiveType = file.type || await inferImageMimeFromBlob(file);
+  const fileName = makeAlbumPhotoFileName(file.name, photoId, effectiveType);
   const fileHandle = await monthDir.getFileHandle(fileName, { create: true });
   const writable = await fileHandle.createWritable();
   await writable.write(file);
@@ -5976,7 +6103,7 @@ async function saveOriginalPhotoToAlbum(file, photoId, context = {}) {
     albumRoot: state.album.rootName || root.name || "",
     relativePath: [LIBRARY_DIR_NAME, LIBRARY_SCHOOLS_DIR, schoolDirName, "photos", "originals", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), fileName].join("/"),
     name: file.name || fileName,
-    type: file.type || "application/octet-stream",
+    type: effectiveType || "application/octet-stream",
     size: file.size || 0,
     lastModified: Number.isFinite(file.lastModified) ? file.lastModified : null,
     schoolId: school?.id || "",
@@ -5987,7 +6114,19 @@ async function saveOriginalPhotoToAlbum(file, photoId, context = {}) {
 
 async function getLibraryRootDirectory(root = state.album.handle, options = {}) {
   if (!root) throw new Error("资料库未连接");
-  return getOrCreateDirectory(root, LIBRARY_DIR_NAME, options);
+  const appDir = await getOrCreateDirectory(root, LIBRARY_DIR_NAME, options);
+  if (options.create !== false) await ensureNoMediaFile(appDir);
+  return appDir;
+}
+
+async function ensureNoMediaFile(directory) {
+  try {
+    const fileHandle = await directory.getFileHandle(LIBRARY_NO_MEDIA_FILE, { create: true });
+    const file = await fileHandle.getFile();
+    if (file.size > 0) await writeBlobFileToDirectory(directory, LIBRARY_NO_MEDIA_FILE, new Blob([], { type: "application/octet-stream" }));
+  } catch (error) {
+    console.warn("写入 .nomedia 失败:", error);
+  }
 }
 
 function getLibrarySchoolDirName(school) {
@@ -6048,6 +6187,7 @@ function makeLibraryIndex(schools) {
 async function buildSchoolLibraryManifest(school) {
   const mapBlob = await getMapImage(school.id);
   const mapName = school.mapImageName || "map-image";
+  const mapFileName = mapBlob ? makeLibraryMapFileName(school, mapBlob) : "";
   return {
     kind: "campus-memoir-school-library",
     version: 1,
@@ -6056,7 +6196,7 @@ async function buildSchoolLibraryManifest(school) {
       id: school.id,
       name: school.name,
       mapImageName: mapName,
-      mapFile: mapBlob ? LIBRARY_MAP_FILE : "",
+      mapFile: mapFileName,
       mapMeta: getSchoolMapMetaForExport(school),
       mapImageStored: Boolean(mapBlob || school.mapImageStored),
       structureName: school.structureName,
@@ -6076,7 +6216,7 @@ async function writeSchoolToLibrary(appDir, school) {
   const schoolDir = await getOrCreateDirectory(schoolsDir, getLibrarySchoolDirName(school));
   const manifest = await buildSchoolLibraryManifest(school);
   const mapBlob = await getMapImage(school.id);
-  if (mapBlob) await writeBlobFileToDirectory(schoolDir, LIBRARY_MAP_FILE, mapBlob);
+  if (mapBlob) await writeBlobFileToDirectory(schoolDir, manifest.school.mapFile || makeLibraryMapFileName(school, mapBlob), mapBlob);
   await writeJsonFileToDirectory(schoolDir, LIBRARY_MANIFEST_FILE, manifest);
   school.libraryUpdatedAt = manifest.exportedAt;
   return manifest;
@@ -6103,6 +6243,14 @@ async function readSchoolManifestFromLibrary(appDir, entry) {
       mapBlob = await mapHandle.getFile();
     } catch (error) {
       if (error?.name !== "NotFoundError") throw error;
+      if (mapFileName !== LIBRARY_MAP_FILE) {
+        try {
+          const legacyMapHandle = await schoolDir.getFileHandle(LIBRARY_MAP_FILE);
+          mapBlob = await legacyMapHandle.getFile();
+        } catch (legacyError) {
+          if (legacyError?.name !== "NotFoundError") throw legacyError;
+        }
+      }
     }
   }
   return { manifest, mapBlob };
@@ -6143,13 +6291,70 @@ async function importLibrarySchoolBundle(bundle, options = {}) {
   return school;
 }
 
-function makeAlbumPhotoFileName(name, photoId) {
-  const safeName = safeFileName(name || "photo");
+function makeAlbumPhotoFileName(name, photoId, type = "") {
+  const safeName = ensureFileNameExtension(name || "photo", type, "photo");
   const dot = safeName.lastIndexOf(".");
   const hasExtension = dot > 0 && dot < safeName.length - 1;
   const base = hasExtension ? safeName.slice(0, dot) : safeName;
   const ext = hasExtension ? safeName.slice(dot) : "";
   return `${photoId}-${base}`.slice(0, Math.max(16, 120 - ext.length)) + ext;
+}
+
+function makeLibraryMapFileName(school, blob) {
+  return ensureFileNameExtension(LIBRARY_MAP_FILE, blob?.type || school?.mapMeta?.type || "", "map-image");
+}
+
+function ensureFileNameExtension(name, type = "", fallbackBase = "file") {
+  const safeName = safeFileName(name || fallbackBase);
+  const preferred = getPreferredExtensionForMime(type);
+  if (!preferred) return safeName;
+  const dot = safeName.lastIndexOf(".");
+  const hasExtension = dot > 0 && dot < safeName.length - 1;
+  const ext = hasExtension ? safeName.slice(dot).toLowerCase() : "";
+  if (hasImageExtensionForMime(ext, type)) return safeName;
+  const base = hasExtension ? safeName.slice(0, dot) : safeName;
+  return `${base || safeFileName(fallbackBase)}${preferred}`;
+}
+
+function normalizeMimeType(type) {
+  return String(type || "").split(";")[0].trim().toLowerCase();
+}
+
+function getPreferredExtensionForMime(type) {
+  return IMAGE_MIME_EXTENSIONS[normalizeMimeType(type)] || "";
+}
+
+function hasImageExtensionForMime(ext, type) {
+  const mime = normalizeMimeType(type);
+  if (!mime.startsWith("image/")) return true;
+  if (!ext) return false;
+  if (mime === "image/jpeg") return ext === ".jpg" || ext === ".jpeg";
+  if (mime === "image/tiff") return ext === ".tif" || ext === ".tiff";
+  return ext === getPreferredExtensionForMime(mime);
+}
+
+async function inferImageMimeFromBlob(blob) {
+  if (!blob || typeof blob.slice !== "function") return "";
+  try {
+    const bytes = new Uint8Array(await blob.slice(0, 32).arrayBuffer());
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+    if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+    if (bytes.length >= 12 && asciiFromBytes(bytes, 0, 4) === "RIFF" && asciiFromBytes(bytes, 8, 4) === "WEBP") return "image/webp";
+    if (bytes.length >= 6 && (asciiFromBytes(bytes, 0, 6) === "GIF87a" || asciiFromBytes(bytes, 0, 6) === "GIF89a")) return "image/gif";
+    if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) return "image/bmp";
+    if (bytes.length >= 12 && asciiFromBytes(bytes, 4, 4) === "ftyp") {
+      const brand = asciiFromBytes(bytes, 8, 4).toLowerCase();
+      if (brand.startsWith("heic") || brand.startsWith("heix")) return "image/heic";
+      if (brand.startsWith("heif") || brand.startsWith("hevc") || brand.startsWith("mif1")) return "image/heif";
+    }
+  } catch (error) {
+    console.warn("图片格式识别失败:", error);
+  }
+  return "";
+}
+
+function asciiFromBytes(bytes, start, length) {
+  return Array.from(bytes.slice(start, start + length), (code) => String.fromCharCode(code)).join("");
 }
 
 function makePreviewFileName(name, photoId) {
@@ -6160,7 +6365,7 @@ function makePreviewFileName(name, photoId) {
 }
 
 async function createPreviewBlob(file) {
-  if (!file.type?.startsWith("image/")) return file;
+  if (!file.type?.startsWith("image/")) return { blob: file, size: null };
   const image = await loadImageElement(URL.createObjectURL(file), { revoke: true });
   const scale = Math.min(1, PHOTO_PREVIEW_MAX_SIDE / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
   const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
@@ -12332,6 +12537,10 @@ function renderAlbumStatus() {
     els.albumChooseButton.disabled = !album.supported;
     els.albumChooseButton.textContent = album.handle ? "更换资料库" : "选择资料库";
   }
+  if (els.libraryOpenButton) {
+    els.libraryOpenButton.disabled = !album.supported || !album.handle;
+    els.libraryOpenButton.textContent = album.browserOpen ? "收起资料库" : "打开资料库";
+  }
   if (els.albumReconnectButton) {
     els.albumReconnectButton.disabled = !album.supported || !album.handle;
   }
@@ -12345,6 +12554,43 @@ function renderAlbumStatus() {
   if (els.albumForgetButton) {
     els.albumForgetButton.disabled = !album.handle;
   }
+  renderLibraryBrowser();
+}
+
+function renderLibraryBrowser(loadingMessage = "") {
+  if (!els.libraryBrowser) return;
+  const album = state.album;
+  els.libraryBrowser.hidden = !album.browserOpen;
+  if (!album.browserOpen) {
+    els.libraryBrowser.innerHTML = "";
+    return;
+  }
+  const entries = album.browserEntries || [];
+  const rows = entries.slice(0, 120).map((entry) => {
+    const icon = entry.kind === "directory" ? "📁" : (entry.kind === "file" ? "📄" : "i");
+    const meta = entry.kind === "file"
+      ? `${formatFileSize(entry.size)}${entry.type ? ` · ${escapeHtml(entry.type)}` : ""}`
+      : "文件夹";
+    return `<li><span>${icon}</span><div><strong title="${escapeAttr(entry.path)}">${escapeHtml(entry.path)}</strong><small>${meta}</small></div></li>`;
+  }).join("");
+  els.libraryBrowser.innerHTML = `
+    <div class="library-browser-head">
+      <strong>${escapeHtml(loadingMessage || album.browserMessage || "资料库")}</strong>
+      <button class="secondary-button compact" type="button" data-library-action="refresh">刷新</button>
+    </div>
+    <p>网页不能直接打开系统文件管理器；这里读取已授权文件夹内的资料库目录。</p>
+    <ul>${rows || "<li><span>i</span><div><strong>暂无文件</strong><small>同步后会显示 library.json、school.json、map-image 和照片原图。</small></div></li>"}</ul>
+  `;
+  const refreshButton = els.libraryBrowser.querySelector("[data-library-action='refresh']");
+  if (refreshButton) refreshButton.addEventListener("click", () => void refreshLibraryBrowser());
+}
+
+function formatFileSize(size) {
+  const value = Number(size) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 function openDatabase() {

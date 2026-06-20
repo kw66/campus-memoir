@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>校园回忆录</title>
     <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260618a" />
-    <link rel="stylesheet" href="./src/styles.css?v=20260620c" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260620e" />
   </head>
   <body>
     <div class="app-shell">
@@ -50,11 +50,13 @@
                 <p id="albumDescription">地图、结构、照片原图和游戏数据可同步到本机文件夹。</p>
                 <div class="album-actions">
                   <button class="secondary-button compact" id="albumChooseButton" type="button">选择资料库</button>
+                  <button class="secondary-button compact" id="libraryOpenButton" type="button">打开资料库</button>
                   <button class="secondary-button compact" id="albumReconnectButton" type="button">重连</button>
                   <button class="secondary-button compact" id="librarySyncButton" type="button">同步</button>
                   <button class="secondary-button compact" id="libraryRestoreButton" type="button">恢复</button>
                   <button class="secondary-button compact danger" id="albumForgetButton" type="button">关闭</button>
                 </div>
+                <div class="library-browser" id="libraryBrowser" hidden></div>
               </article>
             </div>
             <div class="game-info-page stats-page" id="gameInfoPageStats" data-game-info-page="stats" role="tabpanel" aria-labelledby="gameInfoTabStats" hidden>
@@ -398,6 +400,6 @@
       </form>
     </dialog>
 
-    <script src="./src/app.js?v=20260620d"></script>
+    <script src="./src/app.js?v=20260620e"></script>
   </body>
 </html>
