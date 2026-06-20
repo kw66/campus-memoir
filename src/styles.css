@@ -12,6 +12,7 @@
   --danger: #a23d34;
   --map-bg: #d9e5d2;
   --shadow: 0 14px 36px rgba(49, 44, 33, 0.14);
+  --app-vh: 1vh;
 }
 
 * {
@@ -598,6 +599,13 @@ body.game-info-open {
   box-shadow: 0 10px 24px rgba(49, 44, 33, 0.12);
 }
 
+.map-actions.inside-building-actions {
+  right: auto;
+  left: 10px;
+  max-width: calc(100% - 20px);
+  justify-content: flex-start;
+}
+
 .map-action-button,
 .map-action-toggle {
   min-height: 30px;
@@ -916,39 +924,32 @@ body.game-info-open {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
+.game-actions.photo-actions [data-game-action="linkPhotoSpotEntrance"],
+.game-actions.photo-actions [data-game-action="enterFromPhotoSpot"],
+.game-actions.photo-actions [data-game-action="captureSpotPhoto"],
+.game-actions.photo-actions [data-game-action="captureBuildingPhoto"],
+.game-actions.photo-actions [data-game-action="uploadSpotPhoto"],
+.game-actions.photo-actions [data-game-action="uploadBuildingPhoto"] {
+  grid-column: span 2;
+  order: 1;
+}
+
 .game-actions.photo-actions [data-game-action="moveSpotPhotoBackward"],
 .game-actions.photo-actions [data-game-action="moveBuildingPhotoBackward"] {
   grid-column: span 2;
-  order: 1;
+  order: 2;
 }
 
 .game-actions.photo-actions [data-game-action="moveSpotPhotoForward"],
 .game-actions.photo-actions [data-game-action="moveBuildingPhotoForward"] {
   grid-column: span 2;
-  order: 2;
+  order: 3;
 }
 
 .game-actions.photo-actions [data-game-action="deletePhotoSpotSelected"],
 .game-actions.photo-actions [data-game-action="deleteBuildingPhoto"] {
   grid-column: span 2;
-  order: 3;
-}
-
-.game-actions.photo-actions [data-game-action="captureSpotPhoto"],
-.game-actions.photo-actions [data-game-action="captureBuildingPhoto"] {
-  grid-column: span 3;
   order: 4;
-}
-
-.game-actions.photo-actions [data-game-action="uploadSpotPhoto"],
-.game-actions.photo-actions [data-game-action="uploadBuildingPhoto"] {
-  grid-column: span 3;
-  order: 5;
-}
-
-.game-actions.photo-actions [data-game-action="enterFromPhotoSpot"] {
-  grid-column: 1 / -1;
-  order: 0;
 }
 
 .game-actions.entrance-actions {
@@ -2120,7 +2121,7 @@ textarea.game-input {
   }
 
   .topbar {
-    min-height: 44px;
+    min-height: 36px;
     display: flex;
     align-items: stretch;
     gap: 6px;
@@ -2149,14 +2150,24 @@ textarea.game-input {
   .topbar .secondary-button,
   .topbar .primary-button {
     width: 100%;
-    min-height: 42px;
+    min-height: 34px;
     padding: 0 6px;
-    font-size: 13px;
+    font-size: 12px;
     white-space: nowrap;
   }
 
   .stat-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .stat-card {
+    min-height: 62px;
+    padding: 7px 8px;
+  }
+
+  .stat-card strong {
+    font-size: 19px;
   }
 
   .game-info-panel {
@@ -2180,8 +2191,8 @@ textarea.game-input {
   }
 
   .map-frame {
-    height: clamp(420px, 68dvh, 680px);
-    min-height: 420px;
+    height: clamp(330px, calc(var(--app-vh) * 56), 560px);
+    min-height: 330px;
     border-radius: 8px;
   }
 
@@ -2195,6 +2206,13 @@ textarea.game-input {
     max-width: none;
     gap: 5px;
     padding: 5px;
+  }
+
+  .map-actions.inside-building-actions {
+    left: 8px;
+    right: auto;
+    max-width: calc(100% - 16px);
+    justify-content: flex-start;
   }
 
   .map-action-button,
@@ -2254,7 +2272,8 @@ textarea.game-input {
 
   .spot-fields,
   .building-fields {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    gap: 6px;
   }
 
   .photo-list {

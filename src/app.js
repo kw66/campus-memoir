@@ -504,6 +504,7 @@ const state = {
     anchor: null,
     moved: false
   },
+  viewportHeightLock: { width: 0, orientation: "" },
   lastGamePointerClickHandledAt: 0,
   editorEnabled: false,
   editorNotice: "",
@@ -719,6 +720,7 @@ void init();
 async function init() {
   decorateIconButtons();
   bindEvents();
+  updateAppViewportHeightVar();
   resizeCanvas();
   try {
     state.db = await openDatabase();
@@ -867,6 +869,7 @@ async function init() {
       },
       updateNearbyGameContext,
       followPlayer,
+      setGameViewToDefaultFollow,
       renderGamePanel,
       updateGameMovement,
       updateInteriorMovement,
@@ -1021,7 +1024,11 @@ function bindEvents() {
   });
 
   els.mapPhotoButton.addEventListener("click", () => {
-    createPhotoSpotAtPlayer();
+    if (state.gameData.location.kind === "building") {
+      addInteriorSpotToSelectedRoom();
+    } else {
+      createPhotoSpotAtPlayer();
+    }
   });
   els.mapAnnotationToggle.addEventListener("change", () => {
     setMapAnnotationsVisible(els.mapAnnotationToggle.checked);
@@ -1316,6 +1323,7 @@ function bindEvents() {
   els.mapCanvas.addEventListener("contextmenu", (event) => event.preventDefault());
   els.mapCanvas.addEventListener("wheel", onWheel, { passive: false });
   window.addEventListener("resize", () => {
+    updateAppViewportHeightVar({ preserveMobileScrollHeight: true });
     resizeCanvas();
     if (state.editorEnabled) clampView();
     else followPlayer();
@@ -2839,9 +2847,35 @@ function initializeGameForCurrentMap(options = {}) {
 
 function setGameViewToDefaultFollow() {
   if (!state.mapImage) return;
-  state.view.scale = clamp(1, state.view.minScale, state.view.maxScale);
+  const defaultScale = isCompactViewport() ? 0.5 : 1;
+  state.view.scale = clamp(defaultScale, state.view.minScale, state.view.maxScale);
   followPlayer();
   updateZoomReadout();
+}
+
+function isCompactViewport() {
+  return window.matchMedia?.("(max-width: 980px)")?.matches === true;
+}
+
+function getViewportOrientationKey() {
+  const width = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+  const height = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+  return width >= height ? "landscape" : "portrait";
+}
+
+function updateAppViewportHeightVar(options = {}) {
+  const width = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+  const orientation = getViewportOrientationKey();
+  if (
+    options.preserveMobileScrollHeight &&
+    isCompactViewport() &&
+    state.viewportHeightLock.width === width &&
+    state.viewportHeightLock.orientation === orientation
+  ) {
+    return;
+  }
+  state.viewportHeightLock = { width, orientation };
+  document.documentElement.style.setProperty("--app-vh", `${Math.max(1, window.innerHeight || 1) * 0.01}px`);
 }
 
 function followPlayer() {
@@ -4533,6 +4567,19 @@ function getInteriorGridDimensions(count, aspect = state.canvasSize.width / Math
 function getInteriorRoomLayout(building = getSelectedBuildingMemory()) {
   const rooms = building?.rooms || [];
   const count = Math.max(1, rooms.length || 1);
+  const specialCells = getInteriorSpecialRoomCells(rooms);
+  if (specialCells) {
+    return {
+      cols: 0,
+      rows: 0,
+      gap: rooms.length > 1 ? 10 : 0,
+      cellW: 0,
+      cellH: 0,
+      cells: specialCells,
+      width: INTERIOR_MAP_WIDTH,
+      height: INTERIOR_MAP_HEIGHT
+    };
+  }
   const { cols, rows } = getInteriorGridDimensions(count);
   const gap = rooms.length > 1 ? 10 : 0;
   const cellW = (INTERIOR_MAP_WIDTH - gap * (cols - 1)) / cols;
@@ -4552,6 +4599,56 @@ function getInteriorRoomLayout(building = getSelectedBuildingMemory()) {
     };
   });
   return { cols, rows, gap, cellW, cellH, cells, width: INTERIOR_MAP_WIDTH, height: INTERIOR_MAP_HEIGHT };
+}
+
+function getInteriorSpecialRoomCells(rooms) {
+  if (!rooms.length) return [];
+  const gap = rooms.length > 1 ? 10 : 0;
+  const w = INTERIOR_MAP_WIDTH;
+  const h = INTERIOR_MAP_HEIGHT;
+  const halfW = (w - gap) / 2;
+  const halfH = (h - gap) / 2;
+  const make = (room, index, x, y, width, height) => ({ room, index, col: 0, row: 0, x, y, width, height });
+  if (rooms.length === 1) return [make(rooms[0], 0, 0, 0, w, h)];
+  if (rooms.length === 2) {
+    return w >= h
+      ? [
+          make(rooms[0], 0, 0, 0, halfW, h),
+          make(rooms[1], 1, halfW + gap, 0, halfW, h)
+        ]
+      : [
+          make(rooms[0], 0, 0, 0, w, halfH),
+          make(rooms[1], 1, 0, halfH + gap, w, halfH)
+        ];
+  }
+  if (rooms.length === 3) {
+    const rightH = (h - gap * 2) / 3;
+    return [
+      make(rooms[0], 0, 0, 0, halfW, h),
+      make(rooms[1], 1, halfW + gap, 0, halfW, rightH),
+      make(rooms[2], 2, halfW + gap, rightH + gap, halfW, h - rightH - gap)
+    ];
+  }
+  if (rooms.length === 4) {
+    return [
+      make(rooms[0], 0, 0, 0, halfW, halfH),
+      make(rooms[1], 1, halfW + gap, 0, halfW, halfH),
+      make(rooms[2], 2, 0, halfH + gap, halfW, halfH),
+      make(rooms[3], 3, halfW + gap, halfH + gap, halfW, halfH)
+    ];
+  }
+  if (rooms.length === 5) {
+    const topW = (w - gap) / 2;
+    const bottomW = (w - gap * 2) / 3;
+    return [
+      make(rooms[0], 0, 0, 0, topW, halfH),
+      make(rooms[1], 1, topW + gap, 0, topW, halfH),
+      make(rooms[2], 2, 0, halfH + gap, bottomW, halfH),
+      make(rooms[3], 3, bottomW + gap, halfH + gap, bottomW, halfH),
+      make(rooms[4], 4, (bottomW + gap) * 2, halfH + gap, bottomW, halfH)
+    ];
+  }
+  return null;
 }
 
 function getInteriorCellForPoint(point, building = getSelectedBuildingMemory()) {
@@ -5339,7 +5436,8 @@ function renderGamePanel(options = {}) {
   const insideBuilding = state.gameData.location.kind === "building";
   els.gamePanel.hidden = !visible;
   els.mapToolbar.hidden = !visible || insideBuilding;
-  els.mapActions.hidden = !visible || insideBuilding;
+  els.mapActions.hidden = !visible;
+  els.mapActions.classList.toggle("inside-building-actions", visible && insideBuilding);
   els.zoomReadout.hidden = visible && insideBuilding;
   els.currentSchool.hidden = false;
   els.explorationProgress.hidden = !visible || insideBuilding;
@@ -5552,19 +5650,15 @@ function renderCampusInteractionHtml(region, building) {
           <input class="game-input" data-game-field="buildingName" type="text" value="${escapeAttr(building?.customName || region?.name || "")}" placeholder="建筑名称">
           <input class="game-input" data-game-field="buildingPhotoDate" type="date" value="${escapeAttr(getBuildingPanelDateValue(building))}">
         </div>
-        ${showEntranceTools ? `
-          <div class="game-actions entrance-actions">
-            <button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>
-          </div>
-          <div class="entrance-list">${renderEntranceListHtml(region, building)}</div>
-        ` : ""}
         <div class="game-actions dense photo-actions">
+          ${showEntranceTools ? `<button class="secondary-button" type="button" data-game-action="linkPhotoSpotEntrance" title="${escapeAttr(entranceCandidate.reason)}">设入口</button>` : ""}
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoBackward" ${moveBackDisabled ? "disabled" : ""}>前移</button>
           <button class="secondary-button" type="button" data-game-action="moveBuildingPhotoForward" ${moveForwardDisabled ? "disabled" : ""}>后移</button>
           <button class="secondary-button" type="button" data-game-action="captureBuildingPhoto"${getPhotoSourceDisabledAttr("camera")}>拍照</button>
           <button class="secondary-button" type="button" data-game-action="uploadBuildingPhoto"${getPhotoSourceDisabledAttr("album")}>相册</button>
           <button class="secondary-button danger" type="button" data-game-action="deleteBuildingPhoto" ${!editSelectedId ? "disabled" : ""}>删图</button>
         </div>
+        ${showEntranceTools ? `<div class="entrance-list">${renderEntranceListHtml(region, building)}</div>` : ""}
         <div class="photo-list building-photo-list" data-photo-list="building">
           ${photoList || `<div class="photo-empty list-empty">还没有照片</div>`}
         </div>
@@ -10730,7 +10824,7 @@ function drawInteriorScene(ctx) {
     ctx.fillStyle = active ? "#e8f0e7" : "#f7efe2";
     ctx.fillRect(x, y, w, h);
     if (image && isPhotoImageReady(image)) {
-      drawCoverImage(ctx, image, x, y, w, h);
+      drawContainImage(ctx, image, x, y, w, h);
       ctx.fillStyle = active ? "rgba(31, 85, 78, 0.18)" : "rgba(255, 250, 240, 0.12)";
       ctx.fillRect(x, y, w, h);
     } else {
