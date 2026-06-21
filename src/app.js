@@ -5519,14 +5519,114 @@ function markRegionCells(region, gridSize, columns, rows, mark) {
 }
 
 function regionIntersectsExplorationCell(region, bounds) {
-  const points = getExplorationCellSamplePoints(bounds);
-  if (points.some((point) => isPointInRegion(point, region))) return true;
-  const center = { x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2 };
-  if (distanceToRegion(center, getRegionAreas(region), region) <= Math.hypot(bounds.right - bounds.left, bounds.bottom - bounds.top) / 2) return true;
-  return getRegionAreas(region).some((area) => {
-    const areaBounds = getAreaBounds(area);
-    return areaBounds ? boundsOverlap(bounds, areaBounds) : false;
-  });
+  const cellPoints = getExplorationCellSamplePoints(bounds);
+  if (cellPoints.some((point) => isPointInRegion(point, region))) return true;
+  const cellCorners = getExplorationCellCorners(bounds);
+  for (const area of getRegionAreas(region)) {
+    if (areaIntersectsExplorationCell(area, region, bounds, cellCorners)) return true;
+  }
+  return false;
+}
+
+function getExplorationCellCorners(bounds) {
+  return [
+    { x: bounds.left, y: bounds.top },
+    { x: bounds.right, y: bounds.top },
+    { x: bounds.right, y: bounds.bottom },
+    { x: bounds.left, y: bounds.bottom }
+  ];
+}
+
+function areaIntersectsExplorationCell(area, region, bounds, cellCorners) {
+  const areaBounds = getAreaBounds(area);
+  if (!areaBounds || !boundsOverlap(bounds, areaBounds)) return false;
+  if (cellCorners.some((point) => isPointInStructureArea(point, area, region))) return true;
+  const outline = getAreaOutlinePoints(area);
+  if (outline.length && outline.some((point) => pointInBounds(point, bounds))) return true;
+  if (area.kind === "pixels") return pixelRunsIntersectBounds(area.pixels || [], bounds);
+  const closed = area.kind !== "line";
+  return outlineSegmentsIntersectBounds(outline, closed, bounds);
+}
+
+function getAreaOutlinePoints(area) {
+  if (area.kind === "polygon") return area.points || [];
+  if (area.kind === "line") return area.points || [];
+  if (area.kind === "parallelogram") return parallelogramPointsFromArea(area);
+  if (area.kind === "rect") {
+    return [
+      { x: area.x, y: area.y },
+      { x: area.x + area.width, y: area.y },
+      { x: area.x + area.width, y: area.y + area.height },
+      { x: area.x, y: area.y + area.height }
+    ];
+  }
+  if (area.kind === "ellipse") return getEllipseOutlinePoints(area);
+  return [];
+}
+
+function getEllipseOutlinePoints(area) {
+  const points = [];
+  const rx = Math.abs(area.width / 2);
+  const ry = Math.abs(area.height / 2);
+  const cx = area.x + area.width / 2;
+  const cy = area.y + area.height / 2;
+  const steps = 24;
+  for (let index = 0; index < steps; index++) {
+    const angle = index / steps * Math.PI * 2;
+    points.push({ x: cx + Math.cos(angle) * rx, y: cy + Math.sin(angle) * ry });
+  }
+  return points;
+}
+
+function outlineSegmentsIntersectBounds(points, closed, bounds) {
+  if (points.length < 2) return false;
+  for (let index = 1; index < points.length; index++) {
+    if (segmentIntersectsBounds(points[index - 1], points[index], bounds)) return true;
+  }
+  return closed && segmentIntersectsBounds(points[points.length - 1], points[0], bounds);
+}
+
+function segmentIntersectsBounds(start, end, bounds) {
+  if (pointInBounds(start, bounds) || pointInBounds(end, bounds)) return true;
+  const corners = getExplorationCellCorners(bounds);
+  for (let index = 0; index < corners.length; index++) {
+    if (segmentsIntersect(start, end, corners[index], corners[(index + 1) % corners.length])) return true;
+  }
+  return false;
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const o1 = segmentOrientation(a, b, c);
+  const o2 = segmentOrientation(a, b, d);
+  const o3 = segmentOrientation(c, d, a);
+  const o4 = segmentOrientation(c, d, b);
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && pointOnSegment(c, a, b)) return true;
+  if (o2 === 0 && pointOnSegment(d, a, b)) return true;
+  if (o3 === 0 && pointOnSegment(a, c, d)) return true;
+  if (o4 === 0 && pointOnSegment(b, c, d)) return true;
+  return false;
+}
+
+function segmentOrientation(a, b, c) {
+  const value = (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y);
+  if (Math.abs(value) < 1e-9) return 0;
+  return value > 0 ? 1 : 2;
+}
+
+function pointOnSegment(point, start, end) {
+  return point.x >= Math.min(start.x, end.x) - 1e-9
+    && point.x <= Math.max(start.x, end.x) + 1e-9
+    && point.y >= Math.min(start.y, end.y) - 1e-9
+    && point.y <= Math.max(start.y, end.y) + 1e-9;
+}
+
+function pointInBounds(point, bounds) {
+  return point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top && point.y <= bounds.bottom;
+}
+
+function pixelRunsIntersectBounds(runs, bounds) {
+  return runs.some((run) => run.y >= bounds.top && run.y <= bounds.bottom && run.x <= bounds.right && run.x + run.length >= bounds.left);
 }
 
 function boundsOverlap(a, b) {
