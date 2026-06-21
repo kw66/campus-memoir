@@ -545,7 +545,15 @@ body.game-info-open {
   border-radius: 7px;
   background: color-mix(in srgb, var(--panel), transparent 7%);
   box-shadow: 0 8px 20px rgba(49, 44, 33, 0.1);
-  pointer-events: none;
+  color: inherit;
+  cursor: pointer;
+  appearance: none;
+  text-align: left;
+}
+
+.exploration-progress.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), #fffaf0 86%);
 }
 
 .exploration-progress-row {
@@ -617,6 +625,20 @@ body.game-info-open {
 
 .map-action-button {
   cursor: pointer;
+}
+
+.map-action-button.active,
+.map-action-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fffaf0;
+}
+
+.map-action-button.emoji-button {
+  min-width: 42px;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
 }
 
 .map-action-toggle input {

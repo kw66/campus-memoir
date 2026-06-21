@@ -1036,14 +1036,14 @@ function bindEvents() {
       createPhotoSpotAtPlayer();
     }
   });
-  els.mapAnnotationToggle.addEventListener("change", () => {
-    setMapAnnotationsVisible(els.mapAnnotationToggle.checked);
+  els.mapAnnotationToggle.addEventListener("click", () => {
+    setMapAnnotationsVisible(!showMapAnnotations());
     markGameDirty({ defer: true });
     renderGamePanel({ force: true });
     queueDraw();
   });
-  els.mapExplorationGridToggle.addEventListener("change", () => {
-    state.gameData.settings.showExplorationGrid = els.mapExplorationGridToggle.checked;
+  els.explorationProgress.addEventListener("click", () => {
+    state.gameData.settings.showExplorationGrid = state.gameData.settings.showExplorationGrid !== true;
     markGameDirty({ defer: true });
     renderGamePanel({ force: true });
     queueDraw();
@@ -5562,6 +5562,17 @@ function setMapAnnotationsVisible(visible) {
   state.gameData.settings.showPeopleMarkers = value;
 }
 
+function updateMapActionToggleStates() {
+  const annotationsOn = showMapAnnotations();
+  els.mapAnnotationToggle.setAttribute("aria-pressed", annotationsOn ? "true" : "false");
+  els.mapAnnotationToggle.classList.toggle("active", annotationsOn);
+  const explorationOn = state.gameData.settings.showExplorationGrid === true;
+  els.explorationProgress.setAttribute("aria-pressed", explorationOn ? "true" : "false");
+  els.explorationProgress.classList.toggle("active", explorationOn);
+  const explorationInput = els.mapExplorationGridToggle?.querySelector?.("input") || els.mapExplorationGridToggle;
+  if (explorationInput && "checked" in explorationInput) explorationInput.checked = explorationOn;
+}
+
 function renderGamePanel(options = {}) {
   const school = getSelectedSchool();
   const visible = Boolean(school && state.mapImage && !state.editorEnabled);
@@ -5574,8 +5585,7 @@ function renderGamePanel(options = {}) {
   els.explorationProgress.hidden = !visible || insideBuilding;
   renderCurrentSchool();
   updateExplorationProgressUi();
-  els.mapAnnotationToggle.checked = showMapAnnotations();
-  els.mapExplorationGridToggle.checked = state.gameData.settings.showExplorationGrid === true;
+  updateMapActionToggleStates();
   if (!visible) return;
   els.gamePanel.classList.toggle("inside-building", insideBuilding);
   els.panelHeader.hidden = true;

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>校园回忆录</title>
     <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260618a" />
-    <link rel="stylesheet" href="./src/styles.css?v=20260621e" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260621f" />
   </head>
   <body>
     <div class="app-shell">
@@ -73,7 +73,7 @@
       <main class="game-layout" aria-label="校园回忆录主界面">
         <section class="map-panel" aria-label="地图区域">
           <div class="map-toolbar" id="mapToolbar" hidden>
-            <div class="exploration-progress" id="explorationProgress" hidden>
+            <button class="exploration-progress" id="explorationProgress" type="button" aria-pressed="false" hidden>
               <div class="exploration-progress-row">
                 <span>探索</span>
                 <strong id="explorationProgressText">0%</strong>
@@ -81,14 +81,14 @@
               <div class="exploration-progress-track" aria-hidden="true">
                 <span id="explorationProgressFill"></span>
               </div>
-            </div>
+            </button>
           </div>
           <div class="map-frame" id="mapFrame">
             <canvas class="map-canvas" id="mapCanvas"></canvas>
             <output class="map-zoom-readout" id="zoomReadout">100%</output>
             <div class="map-actions" id="mapActions" hidden>
-              <button class="map-action-button" id="mapPhotoButton" type="button">拍照点</button>
-              <label class="map-action-toggle"><input id="mapAnnotationToggle" type="checkbox" checked />标注</label>
+              <button class="map-action-button emoji-button" id="mapPhotoButton" type="button" title="拍照点" aria-label="拍照点">📷</button>
+              <button class="map-action-button" id="mapAnnotationToggle" type="button" aria-pressed="true">标注</button>
               <label class="map-action-toggle" hidden><input id="mapExplorationGridToggle" type="checkbox" />探索</label>
             </div>
             <div class="current-school" id="currentSchool">未选择学校</div>
@@ -400,6 +400,6 @@
       </form>
     </dialog>
 
-    <script src="./src/app.js?v=20260621e"></script>
+    <script src="./src/app.js?v=20260621f"></script>
   </body>
 </html>
