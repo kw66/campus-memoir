@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>校园回忆录</title>
     <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg?v=20260618a" />
-    <link rel="stylesheet" href="./src/styles.css?v=20260621g" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260622a" />
   </head>
   <body>
     <div class="app-shell">
@@ -52,11 +52,30 @@
                   <button class="secondary-button compact" id="albumChooseButton" type="button">选择资料库</button>
                   <button class="secondary-button compact" id="libraryOpenButton" type="button">打开资料库</button>
                   <button class="secondary-button compact" id="albumReconnectButton" type="button">重连</button>
-                  <button class="secondary-button compact" id="librarySyncButton" type="button">同步</button>
-                  <button class="secondary-button compact" id="libraryRestoreButton" type="button">恢复</button>
+                  <button class="secondary-button compact" id="librarySyncButton" type="button">保存到资料库</button>
+                  <button class="secondary-button compact" id="libraryRestoreButton" type="button">从资料库恢复</button>
                   <button class="secondary-button compact danger" id="albumForgetButton" type="button">关闭</button>
                 </div>
                 <div class="library-browser" id="libraryBrowser" hidden></div>
+              </article>
+              <article class="game-info-card rules-card">
+                <h2>规则说明</h2>
+                <details open>
+                  <summary>探索怎么算？</summary>
+                  <p>探索按校园网格计算。网格内有已点亮建筑或已有照片的拍照点，就算探索。点击顶部探索条可显示或隐藏探索网格。</p>
+                </details>
+                <details>
+                  <summary>拍照点怎么用？</summary>
+                  <p>移动到有回忆的位置，点击地图右上角 📷 建立拍照点。太近的拍照点会合并为一个位置，避免地图被重复点位占满。</p>
+                </details>
+                <details>
+                  <summary>入口怎么生效？</summary>
+                  <p>入口由拍照点关联到建筑或场景。拍照点至少有一张照片后，才能作为入口进入；进入后的内容绑定在建筑上。</p>
+                </details>
+                <details>
+                  <summary>资料库保存什么？</summary>
+                  <p>游戏默认保存在浏览器本地。选择游戏资料库后，照片原图、地图、结构和游戏数据会保存到你选择的本机文件夹。</p>
+                </details>
               </article>
             </div>
             <div class="game-info-page stats-page" id="gameInfoPageStats" data-game-info-page="stats" role="tabpanel" aria-labelledby="gameInfoTabStats" hidden>
@@ -400,6 +419,6 @@
       </form>
     </dialog>
 
-    <script src="./src/app.js?v=20260621g"></script>
+    <script src="./src/app.js?v=20260622a"></script>
   </body>
 </html>

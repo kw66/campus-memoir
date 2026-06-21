@@ -1044,6 +1044,7 @@ function bindEvents() {
   });
   els.explorationProgress.addEventListener("click", () => {
     state.gameData.settings.showExplorationGrid = state.gameData.settings.showExplorationGrid !== true;
+    setGameNotice(state.gameData.settings.showExplorationGrid ? "已显示探索网格" : "已隐藏探索网格");
     markGameDirty({ defer: true });
     renderGamePanel({ force: true });
     queueDraw();
@@ -1057,6 +1058,7 @@ function bindEvents() {
 
   els.editorToggleButton.addEventListener("click", () => {
     state.editorEnabled = !state.editorEnabled;
+    const enteringEditor = state.editorEnabled;
     if (!state.editorEnabled) {
       state.activeTool = "pan";
       state.editorMode = "crop";
@@ -1072,6 +1074,7 @@ function bindEvents() {
       setEditorMode(state.editorMode);
     }
     renderEditorState();
+    if (!enteringEditor) state.gamePanelKey = "";
     renderGamePanel({ force: true });
     updateCanvasCursor();
     queueDraw();
@@ -5316,6 +5319,10 @@ function updateExplorationProgressUi() {
   els.explorationProgress.title = `探索 ${percentText}，已点亮 ${progress.litCells}/${progress.totalCells} 个区域`;
 }
 
+function formatPercent(value) {
+  return `${Math.round(clamp(Number(value) || 0, 0, 100))}%`;
+}
+
 function getExplorationProgress() {
   const school = getSelectedSchool();
   if (!school || !state.mapImage || !state.mapNaturalSize.width || !state.mapNaturalSize.height) return createEmptyExplorationProgress();
@@ -5746,19 +5753,58 @@ function renderGamePanel(options = {}) {
     chat: person?.chat.length || 0,
     playerPortrait: Boolean(state.gameData.player.portrait),
     nearbyBuildings: state.currentNearbyBuildingIds.join(","),
-    notice: state.gameNotice
+    notice: state.gameNotice,
+    panelMode: state.gameData.location.kind === "building" ? "building" : selectedTarget ? selectedTarget.kind : "empty"
   });
-  if (!options.force && key === state.gamePanelKey) return;
+  if (!options.force && key === state.gamePanelKey && els.gamePanel.innerHTML.trim()) return;
   state.gamePanelKey = key;
   if (state.gameData.location.kind === "building") {
     els.gamePanel.innerHTML = renderInteriorInteractionPanelHtml(building, room, item, person);
     return;
   }
   if (!selectedTarget) {
-    els.gamePanel.innerHTML = "";
+    els.gamePanel.innerHTML = renderEmptyGamePanelHtml();
     return;
   }
   els.gamePanel.innerHTML = renderNearbyInteractionPanelHtml(selectedTarget, spot, region, building);
+}
+
+function renderEmptyGamePanelHtml() {
+  const progress = getExplorationProgress();
+  const buildingStats = getSelectedSchoolMemoryStats();
+  const hasSchool = Boolean(getSelectedSchool());
+  const started = state.gameData.photoSpots.length > 0 || buildingStats.activeBuildingCount > 0;
+  return `
+    <section class="game-card guide-card">
+      <div class="guide-hero">
+        <strong>${started ? "继续整理校园回忆" : "从一个熟悉的地方开始"}</strong>
+        <span>${hasSchool ? "移动到宿舍、实验室、食堂或操场附近，把地图变成自己的相册。" : "先选择或构建你的校园。"}</span>
+      </div>
+      <div class="guide-stats">
+        <span>探索 ${formatPercent(progress.percent)}</span>
+        <span>建筑 ${buildingStats.activeBuildingCount}/${buildingStats.totalBuildingCount}</span>
+        <span>拍照点 ${state.gameData.photoSpots.length}</span>
+      </div>
+      <div class="guide-steps">
+        <div><b>1</b><span>移动到有回忆的位置，点击地图右上角相机按钮建立拍照点。</span></div>
+        <div><b>2</b><span>添加照片后，这个位置会点亮探索网格。</span></div>
+        <div><b>3</b><span>靠近建筑后可以命名、拍照、关联入口。</span></div>
+      </div>
+      <div class="rule-notes">
+        <strong>规则</strong>
+        <p>点击顶部探索条显示或隐藏网格。入口必须由有照片的拍照点激活。资料库可保存照片原图和游戏数据。</p>
+      </div>
+    </section>
+  `;
+}
+
+function getSelectedSchoolMemoryStats() {
+  const editData = getSelectedEditData();
+  const ids = getMemoryStructureIds(editData);
+  return {
+    totalBuildingCount: ids.length,
+    activeBuildingCount: ids.filter((id) => (state.gameData.buildings?.[id]?.photos || []).length > 0).length
+  };
 }
 
 function renderNearbyInteractionPanelHtml(target, spot, region, building) {
@@ -5865,7 +5911,8 @@ function renderSpotPhotoListHtml(spot, selectedId) {
   return renderPhotoTileListHtml(spot.photos || [], {
     activeId: selectedId,
     selectedId: editSelectedId,
-    action: "selectSpotPhoto"
+    action: "selectSpotPhoto",
+    showDate: true
   });
 }
 
@@ -5874,7 +5921,8 @@ function renderInteriorSpotPhotoListHtml(spot, selectedId) {
   return renderPhotoTileListHtml(spot.photos || [], {
     activeId: selectedId,
     selectedId: editSelectedId,
-    action: "selectInteriorSpotPhoto"
+    action: "selectInteriorSpotPhoto",
+    showDate: true
   });
 }
 
@@ -7637,11 +7685,33 @@ function sayHelloToSelectedPerson() {
   const person = getSelectedPerson();
   if (!person) return;
   const now = new Date().toISOString();
-  person.chat.push({ id: createId("chat"), from: "me", text: "你好", createdAt: now });
-  person.chat.push({ id: createId("chat"), from: "person", text: "你好", createdAt: now });
+  const reply = getDefaultPersonReply(person, getSelectedRoom());
+  person.chat.push({ id: createId("chat"), from: "me", text: reply.prompt, createdAt: now });
+  person.chat.push({ id: createId("chat"), from: "person", text: reply.response, createdAt: now });
   person.updatedAt = now;
   markGameDirty();
   renderGamePanel({ force: true });
+}
+
+function getDefaultPersonReply(person, room = null) {
+  const type = person?.type || "";
+  const venueType = room?.type || "";
+  const name = getPersonDisplayName(person);
+  const rules = {
+    "自己": ["看看现在的自己", "这些照片会慢慢拼成你的校园回忆。"],
+    "舍友": ["回寝室吗？", "当然，寝室里总有最日常也最难忘的片段。"],
+    "同门": ["实验进展怎么样？", "先别急，很多回忆都是从工位和讨论开始的。"],
+    "导师": ["老师好。", "最近研究做得怎么样？记得把重要时刻也留在这里。"],
+    "老师": ["老师好。", "这门课、这间教室，也会成为校园记忆的一部分。"],
+    "朋友": ["还记得这里吗？", "记得。很多普通的一天，后来都会变得很珍贵。"],
+    "恋人": ["那天我们来过这里。", "嗯，这个地方应该单独留一张照片。"],
+    "同学": ["好久不见。", "好久不见，校园里的路好像还是原来的样子。"]
+  };
+  if (rules[type]) return { prompt: rules[type][0], response: rules[type][1] };
+  if (venueType === "寝室") return { prompt: "回寝室吗？", response: `${name}看了看周围，这里最像日常生活的起点。` };
+  if (venueType === "实验室") return { prompt: "今天还去实验室吗？", response: `${name}说，实验室里的很多瞬间值得慢慢补上。` };
+  if (venueType === "办公室") return { prompt: "老师在吗？", response: `${name}提醒你，可以把一次重要谈话记录下来。` };
+  return { prompt: "你好。", response: "你好。以后这里可以接入大模型，继续聊你们的校园故事。" };
 }
 
 function deleteSelectedPerson() {
@@ -13053,10 +13123,11 @@ function renderAlbumStatus() {
   }
   if (els.librarySyncButton) {
     els.librarySyncButton.disabled = !album.supported || !album.handle || album.syncRunning;
-    els.librarySyncButton.textContent = album.syncRunning ? "同步中" : "同步";
+    els.librarySyncButton.textContent = album.syncRunning ? "保存中" : "保存到资料库";
   }
   if (els.libraryRestoreButton) {
     els.libraryRestoreButton.disabled = !album.supported || !album.handle || album.syncRunning;
+    els.libraryRestoreButton.textContent = album.syncRunning ? "读取中" : "从资料库恢复";
   }
   if (els.albumForgetButton) {
     els.albumForgetButton.disabled = !album.handle;
