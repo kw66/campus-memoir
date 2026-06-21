@@ -10748,22 +10748,24 @@ function compareMapDepthItems(a, b) {
 
 function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
   const label = getPhotoSpotDisplayName(spot);
+  const markerScale = getMapAnnotationScale();
   const firstPhotoEntry = getMapMarkerPhotoEntries(spot).slice(0, 1);
   const gallery = getMapMarkerGalleryLayout(firstPhotoEntry, {
     maxThumbWidth: 210,
     maxThumbHeight: 150
   });
   ctx.save();
-  ctx.font = "800 12px Microsoft YaHei, sans-serif";
-  const labelWidth = Math.min(ctx.measureText(label).width + 20, 220);
+  ctx.font = getMapMarkerFont(12, 800, markerScale);
+  const sidePadding = 20 * markerScale;
+  const labelWidth = Math.min(ctx.measureText(label).width + sidePadding, 220 * markerScale);
   const hasGallery = gallery.width > 0;
   const countLabel = `${spot.photos?.length || 0}张`;
-  const countWidth = ctx.measureText(countLabel).width + 20;
-  let width = Math.max(92, labelWidth, countWidth, hasGallery ? gallery.width + 18 : 0);
-  const maxWidth = Math.max(options.maxWidth || 230, hasGallery ? gallery.width + 18 : 0);
+  const countWidth = ctx.measureText(countLabel).width + sidePadding;
+  let width = Math.max(92 * markerScale, labelWidth, countWidth, hasGallery ? gallery.width + 18 : 0);
+  const maxWidth = Math.max((options.maxWidth || 230) * markerScale, hasGallery ? gallery.width + 18 : 0);
   width = Math.min(width, maxWidth);
-  const titleHeight = hasGallery ? 20 : 26;
-  const height = titleHeight + (hasGallery ? gallery.height + 10 : 18);
+  const titleHeight = (hasGallery ? 20 : 26) * markerScale;
+  const height = titleHeight + (hasGallery ? gallery.height + 10 : 18 * markerScale);
   const x = screen.x - width / 2;
   const y = screen.y + (options.yOffset || -46) - height;
   const selected = Boolean(options.selected);
@@ -10777,15 +10779,15 @@ function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
   ctx.fillStyle = selected ? "#fffaf0" : "#1d2a24";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = hasGallery ? "800 11px Microsoft YaHei, sans-serif" : ctx.font;
+  ctx.font = hasGallery ? getMapMarkerFont(11, 800, markerScale) : ctx.font;
   ctx.fillText(label, screen.x, y + titleHeight / 2 + 1, width - 10);
   let cursorY = y + titleHeight;
   if (hasGallery) {
     drawMapMarkerGallery(ctx, gallery, screen.x, cursorY + 5, { selected, showLabels: false });
   } else {
     ctx.fillStyle = selected ? "rgba(255, 250, 240, 0.82)" : "rgba(31, 85, 78, 0.72)";
-    ctx.font = "800 10px Microsoft YaHei, sans-serif";
-    ctx.fillText(countLabel, screen.x, cursorY + 8, width - 10);
+    ctx.font = getMapMarkerFont(10, 800, markerScale);
+    ctx.fillText(countLabel, screen.x, cursorY + 8 * markerScale, width - 10);
   }
   ctx.restore();
 }
@@ -10857,7 +10859,7 @@ function getMapAnnotationScale() {
 }
 
 function getMapMarkerFont(size, weight = 800, scale = getMapAnnotationScale()) {
-  const scaledSize = clamp(size * scale, 7, size * 1.15);
+  const scaledSize = clamp(size * scale, 5, size * 1.15);
   return `${weight} ${scaledSize.toFixed(1)}px Microsoft YaHei, sans-serif`;
 }
 
