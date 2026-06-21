@@ -10708,8 +10708,7 @@ function drawGameDepthSortedMapCards(ctx, editData) {
         drawBuildingMarkerCard(ctx, region, center, {
           selected,
           nearby: isNearby,
-          maxWidth: 340,
-          font: "800 13px Microsoft YaHei, sans-serif"
+          maxWidth: 340
         });
       }
     });
@@ -10794,6 +10793,7 @@ function drawPhotoSpotMarkerCard(ctx, spot, screen, options = {}) {
 function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
   const building = state.gameData.buildings[region.id] || null;
   const label = getStructureInteractionLabel(region);
+  const markerScale = getMapAnnotationScale();
   const gallery = getMapMarkerGalleryLayout(getBuildingMapPhotoEntries(building), {
     hero: true,
     heroMaxWidth: 286,
@@ -10804,18 +10804,21 @@ function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
     gap: 6
   });
   const people = showMapAnnotations() ? getBuildingPeople(building) : [];
-  const font = options.font || "800 13px Microsoft YaHei, sans-serif";
+  const font = options.font || getMapMarkerFont(13, 800, markerScale);
   ctx.save();
   ctx.font = font;
-  const labelWidth = Math.min(ctx.measureText(label).width + 20, options.maxWidth || 220);
-  let width = Math.max(84, labelWidth);
+  const sidePadding = 20 * markerScale;
+  const minWidth = 84 * markerScale;
+  const maxTextWidth = (options.maxWidth || 220) * markerScale;
+  const labelWidth = Math.min(ctx.measureText(label).width + sidePadding, maxTextWidth);
+  let width = Math.max(minWidth, labelWidth);
   const hasGallery = gallery.width > 0;
   if (hasGallery) width = Math.max(width, gallery.width + 18);
   if (people.length) width = Math.max(width, 168);
-  const maxWidth = Math.max(options.maxWidth || 320, hasGallery ? gallery.width + 18 : 0);
+  const maxWidth = Math.max((options.maxWidth || 320) * markerScale, hasGallery ? gallery.width + 18 : 0);
   width = Math.min(width, maxWidth);
   const peopleHeight = people.length ? 28 + Math.ceil(people.length / 2) * 20 : 0;
-  const titleHeight = hasGallery ? 20 : 26;
+  const titleHeight = (hasGallery ? 20 : 26) * markerScale;
   const height = titleHeight + (hasGallery ? gallery.height + 10 : 0) + peopleHeight;
   const x = screen.x - width / 2;
   const y = screen.y - height / 2;
@@ -10831,7 +10834,7 @@ function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
   ctx.fillStyle = selected ? "#fffaf0" : "#1d2a24";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = hasGallery ? "800 11px Microsoft YaHei, sans-serif" : font;
+  ctx.font = hasGallery ? getMapMarkerFont(11, 800, markerScale) : font;
   ctx.fillText(label, screen.x, y + titleHeight / 2 + 1, width - 10);
   let cursorY = y + titleHeight;
   if (hasGallery) {
@@ -10847,6 +10850,15 @@ function drawBuildingMarkerCard(ctx, region, screen, options = {}) {
     });
   }
   ctx.restore();
+}
+
+function getMapAnnotationScale() {
+  return clamp(Number(state.view.scale) || 1, 0.45, 1.15);
+}
+
+function getMapMarkerFont(size, weight = 800, scale = getMapAnnotationScale()) {
+  const scaledSize = clamp(size * scale, 7, size * 1.15);
+  return `${weight} ${scaledSize.toFixed(1)}px Microsoft YaHei, sans-serif`;
 }
 
 function drawPeopleMarkerList(ctx, entries, centerX, y, options = {}) {
@@ -11088,10 +11100,9 @@ function drawInteriorFloorPattern(ctx, x, y, width, height, index) {
 
 function drawInteriorRoomLabel(ctx, room, x, y, width, active) {
   const title = getRoomDisplayName(room);
-  const type = room?.type && room.type !== title ? room.type : "";
   ctx.save();
   ctx.font = "900 13px Microsoft YaHei, sans-serif";
-  const titleWidth = Math.min(width - 16, Math.max(72, ctx.measureText(title).width + (type ? 44 : 18)));
+  const titleWidth = Math.min(width - 16, Math.max(72, ctx.measureText(title).width + 18));
   ctx.fillStyle = active ? "rgba(31, 85, 78, 0.92)" : "rgba(255, 250, 240, 0.88)";
   ctx.strokeStyle = active ? "rgba(31, 85, 78, 0.36)" : "rgba(31, 85, 78, 0.16)";
   ctx.lineWidth = 1;
@@ -11102,13 +11113,7 @@ function drawInteriorRoomLabel(ctx, room, x, y, width, active) {
   ctx.fillStyle = active ? "#fffaf0" : "#1d2a24";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText(title, x + 17, y + 22, titleWidth - (type ? 50 : 16));
-  if (type) {
-    ctx.fillStyle = active ? "rgba(255, 250, 240, 0.78)" : "rgba(31, 85, 78, 0.70)";
-    ctx.font = "800 10px Microsoft YaHei, sans-serif";
-    ctx.textAlign = "right";
-    ctx.fillText(type, x + 8 + titleWidth - 8, y + 22, 42);
-  }
+  ctx.fillText(title, x + 17, y + 22, titleWidth - 16);
   ctx.restore();
 }
 
