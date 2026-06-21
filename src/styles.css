@@ -512,7 +512,7 @@ body.game-info-open {
   width: 100%;
   height: 100%;
   display: block;
-  touch-action: none;
+  touch-action: pan-y;
   background: var(--map-bg);
 }
 

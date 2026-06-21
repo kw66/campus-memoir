@@ -508,6 +508,7 @@ const state = {
     anchor: null,
     moved: false
   },
+  gameTouchScroll: null,
   viewportHeightLock: { width: 0, orientation: "" },
   lastGamePointerClickHandledAt: 0,
   editorEnabled: false,
@@ -1327,6 +1328,10 @@ function bindEvents() {
   els.mapCanvas.addEventListener("click", onCanvasClick);
   els.mapCanvas.addEventListener("contextmenu", (event) => event.preventDefault());
   els.mapCanvas.addEventListener("wheel", onWheel, { passive: false });
+  els.mapCanvas.addEventListener("touchstart", onGameTouchStart, { passive: true });
+  els.mapCanvas.addEventListener("touchmove", onGameTouchMove, { passive: true });
+  els.mapCanvas.addEventListener("touchend", onGameTouchEnd, { passive: true });
+  els.mapCanvas.addEventListener("touchcancel", onGameTouchEnd, { passive: true });
   window.addEventListener("resize", () => {
     updateAppViewportHeightVar({ preserveMobileScrollHeight: true });
     resizeCanvas();
@@ -8901,6 +8906,51 @@ function finishGamePinchGesture() {
   queueDraw();
 }
 
+function onGameTouchStart(event) {
+  if (state.editorEnabled || !state.mapImage || event.touches.length !== 1) {
+    state.gameTouchScroll = null;
+    return;
+  }
+  const touch = event.touches[0];
+  state.gameTouchScroll = {
+    startX: touch.clientX,
+    startY: touch.clientY,
+    lastY: touch.clientY,
+    active: false
+  };
+}
+
+function onGameTouchMove(event) {
+  if (state.editorEnabled || !state.gameTouchScroll || event.touches.length !== 1) return;
+  const touch = event.touches[0];
+  const dx = touch.clientX - state.gameTouchScroll.startX;
+  const dy = touch.clientY - state.gameTouchScroll.startY;
+  if (!state.gameTouchScroll.active && Math.abs(dy) > GAME_CLICK_MOVE_TOLERANCE && Math.abs(dy) >= Math.abs(dx) * 0.75) {
+    state.gameTouchScroll.active = true;
+  }
+  if (!state.gameTouchScroll.active) return;
+  scrollPageByTouchDelta(state.gameTouchScroll.lastY - touch.clientY);
+  state.gameTouchScroll.lastY = touch.clientY;
+  if (state.gamePointerDown) {
+    state.gamePointerDown.scrolling = true;
+    state.gamePointerDown.moved = true;
+  }
+}
+
+function onGameTouchEnd() {
+  state.gameTouchScroll = null;
+}
+
+function scrollPageByTouchDelta(deltaY) {
+  if (!Number.isFinite(deltaY) || Math.abs(deltaY) < 0.1) return;
+  const scroller = document.scrollingElement || document.documentElement || document.body;
+  scroller.scrollTop = clamp(
+    scroller.scrollTop + deltaY,
+    0,
+    Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+  );
+}
+
 function handleGamePointerDown(event) {
   markMapInteraction(120);
   const point = getCanvasPoint(event);
@@ -8910,6 +8960,7 @@ function handleGamePointerDown(event) {
     startGamePinchGesture();
     return;
   }
+  const touchPointer = isTouchPointer(event);
   const imagePoint = clampImagePoint(screenToImage(point.x, point.y));
   state.gamePointerDown = {
     pointerId: event.pointerId,
@@ -8919,9 +8970,12 @@ function handleGamePointerDown(event) {
     lastX: point.x,
     lastY: point.y,
     imagePoint,
-    moved: false
+    moved: false,
+    scrolling: false
   };
-  els.mapCanvas.setPointerCapture?.(event.pointerId);
+  if (!touchPointer) {
+    els.mapCanvas.setPointerCapture?.(event.pointerId);
+  }
   updateCanvasCursor();
 }
 
@@ -8938,11 +8992,16 @@ function handleGamePointerMove(event, point = getCanvasPoint(event)) {
     updateCanvasCursor();
     return;
   }
+  const previousY = state.gamePointerDown.lastY;
   const dx = point.x - state.gamePointerDown.startX;
   const dy = point.y - state.gamePointerDown.startY;
   state.gamePointerDown.lastX = point.x;
   state.gamePointerDown.lastY = point.y;
   state.gamePointerDown.moved = Math.hypot(dx, dy) > GAME_CLICK_MOVE_TOLERANCE;
+  if (isTouchPointer(event) && Math.abs(dy) > GAME_CLICK_MOVE_TOLERANCE && Math.abs(dy) >= Math.abs(dx) * 0.75) {
+    state.gamePointerDown.scrolling = true;
+    scrollPageByTouchDelta(previousY - point.y);
+  }
   updateCanvasCursor();
 }
 
@@ -8962,9 +9021,11 @@ function handleGamePointerUp(event) {
   const pointer = state.gamePointerDown;
   if (!pointer || pointer.pointerId !== event.pointerId) return;
   state.gameTouches.delete(event.pointerId);
-  els.mapCanvas.releasePointerCapture?.(event.pointerId);
+  if (!isTouchPointer(event)) {
+    els.mapCanvas.releasePointerCapture?.(event.pointerId);
+  }
   state.lastGamePointerClickHandledAt = performance.now();
-  if (!pointer.moved) {
+  if (!pointer.moved && !pointer.scrolling) {
     const point = getCanvasPoint(event);
     handleGameCanvasClick(point);
   }
